@@ -309,7 +309,6 @@ def run(
     fig.savefig(out, dpi=150, bbox_inches="tight",
                 facecolor=fig.get_facecolor())
     print(f"Saved → {out.resolve()}")
-    plt.close(fig)
 
 
 if __name__ == "__main__":
