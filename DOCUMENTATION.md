@@ -3,9 +3,11 @@
 ## Table of Contents
 
 1. [Concepts and Conventions](#1-concepts-and-conventions)
-2. [Shared Infrastructure: `grid_utils.py`](#2-shared-infrastructure-grid_utilspy)
+2. [Shared Infrastructure](#2-shared-infrastructure)
+   - 2.1 [grid_utils.py](#21-grid_utilspy)
+   - 2.2 [image_utils.py](#22-image_utilspy)
 3. [Universal Rules](#3-universal-rules)
-4. [Strategy Reference](#4-strategy-reference)
+4. [Geometric Strategy Reference](#4-geometric-strategy-reference)
    - 4.1 [Random](#41-random)
    - 4.2 [Row-wise](#42-row-wise)
    - 4.3 [Row-wise Sequential](#43-row-wise-sequential)
@@ -23,10 +25,18 @@
    - 4.15 [Diagonal Sweep](#415-diagonal-sweep)
    - 4.16 [Weighted Center Bias](#416-weighted-center-bias)
    - 4.17 [Hilbert Curve](#417-hilbert-curve)
-5. [Utility: `drawSample`](#5-utility-drawsample)
-6. [Utility: `calculate_entropy`](#6-utility-calculate_entropy)
-7. [Design Decisions and Edge Cases](#7-design-decisions-and-edge-cases)
-8. [Extending the Library](#8-extending-the-library)
+5. [Image-Guided Strategy Reference](#5-image-guided-strategy-reference)
+   - 5.1 [Image pipeline](#51-image-pipeline)
+   - 5.2 [Image Salience](#52-image-salience)
+   - 5.3 [Image Contrast](#53-image-contrast)
+   - 5.4 [Image Colour Concentration](#54-image-colour-concentration)
+   - 5.5 [Image Texture](#55-image-texture)
+6. [Utility: drawSample](#6-utility-drawsample)
+7. [Utility: calculate_entropy](#7-utility-calculate_entropy)
+8. [Utility: compare_strategies_entropy](#8-utility-compare_strategies_entropy)
+9. [Utility: compare_image_strategies_entropy](#9-utility-compare_image_strategies_entropy)
+10. [Design Decisions and Edge Cases](#10-design-decisions-and-edge-cases)
+11. [Extending the Library](#11-extending-the-library)
 
 ---
 
@@ -34,7 +44,7 @@
 
 ### The Grid
 
-An N×N grid of boxes, labelled 1…N² in row-major (left-to-right, top-to-bottom) order:
+An N×N grid of boxes labelled 1…N² in row-major (left-to-right, top-to-bottom) order:
 
 ```
  1  2  3  4
@@ -54,7 +64,7 @@ box  →  row = (box - 1) // N
 
 ### Neighbours
 
-Neighbours are the four **cardinal** grid cells — up, down, left, right — that exist within bounds. Corner and edge boxes have 2 or 3 neighbours respectively; interior boxes have 4.
+Neighbours are the four **cardinal** grid cells — up, down, left, right — that exist within bounds. Corner boxes have 2 neighbours; edge boxes have 3; interior boxes have 4.
 
 ```
 Neighbours of box 6 in a 4×4 grid:  2 (up), 10 (down), 5 (left), 7 (right)
@@ -66,13 +76,15 @@ The **geometric centre** of an N×N grid is the point `((N-1)/2, (N-1)/2)` in 0-
 
 ### Sequences
 
-A **sequence** is an ordered list of `seq_length` boxes, selected **without replacement** from the N²-box pool. Boxes within a single sequence are always distinct. Across different sequences in the same batch, repetition is entirely normal.
+A **sequence** is an ordered list of `seq_length` boxes, selected **without replacement** from the N²-box pool. Boxes within a single sequence are always distinct. Repetition across sequences in the same batch is normal.
 
 ---
 
-## 2. Shared Infrastructure: `grid_utils.py`
+## 2. Shared Infrastructure
 
-All strategy modules import from `grid_utils`. The module exposes:
+### 2.1 `grid_utils.py`
+
+All geometric strategy modules import from `grid_utils`. The module exposes:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -86,34 +98,49 @@ All strategy modules import from `grid_utils`. The module exposes:
 | `random_choice` | `(items) → item` | Uniform random choice (sorts input for stability) |
 | `all_boxes` | `(N) → List[int]` | All boxes `[1, …, N²]` |
 | `pick_and_remove` | `(available: set) → int` | Random pick that mutates the available set |
-| `best_from` | `(candidates, key, available) → int` | Pick the candidate with maximum `key`, ties broken randomly |
-| `worst_from` | `(candidates, key, available) → int` | Pick the candidate with minimum `key`, ties broken randomly |
+| `best_from` | `(candidates, key, available) → int` | Candidate with maximum `key`; ties broken randomly |
+| `worst_from` | `(candidates, key, available) → int` | Candidate with minimum `key`; ties broken randomly |
+
+### 2.2 `image_utils.py`
+
+All image-guided strategy modules import from `image_utils`. The module exposes:
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `load_image` | `(img_index) → ndarray (H,W,3) uint8` | Load `images/img_<n>.png` as RGB |
+| `resize_to_multiple` | `(img_rgb, N) → ndarray` | Resize to nearest multiple of N (bilinear) |
+| `to_grayscale` | `(img_rgb) → ndarray (P,P) float64` | BT.601 luminance in [0,1] |
+| `to_float` | `(img_rgb) → ndarray (P,P,3) float64` | RGB in [0,1] |
+| `add_noise` | `(metric, metric_sd, A) → ndarray` | Add symmetric uniform noise ∈ [−SD·A, +SD·A] |
+| `grid_weights` | `(noisy_metric, N) → ndarray (N²,)` | Average into N×N cells, normalise to [0.1, 0.9], flatten |
+
+**Image naming convention:** `images/img_1.png`, `images/img_2.png`, …  Images are assumed square; non-square images will be treated as if square using the height dimension.
 
 ---
 
 ## 3. Universal Rules
 
-These rules apply **across all strategies**:
+These rules apply **across all strategies**, geometric and image-guided:
 
-**First pick** — Every sequence, regardless of strategy, begins with a uniformly random pick from all N² boxes. No strategy pre-constrains the starting position.
+**First pick** — Every sequence begins with a uniformly random pick from all N² boxes. No strategy pre-constrains the starting position.
 
-**Without replacement** — Once a box is selected it is removed from the available pool and cannot be re-selected within the same sequence.
+**Without replacement** — Once selected, a box is removed from the pool and cannot be re-selected within the same sequence.
 
-**Dead-end fallback** — If the active strategy rule cannot produce a valid next pick (e.g. all neighbours are visited, no knight moves remain, the colour pool is empty), a uniformly random pick is made from the remaining available boxes, and the strategy rule is reapplied from that new position.
+**Dead-end fallback** — If the strategy rule cannot produce a valid next pick (all neighbours visited, no knight moves remaining, colour pool empty, no outward neighbour exists), a uniformly random pick is made from the remaining available boxes, and the rule is reapplied from that new position.
 
-**Tie-breaking** — Whenever multiple candidates are equally valid under a rule (e.g. multiple neighbours at equal distance, multiple boxes in the same diagonal), one is chosen uniformly at random.
+**Tie-breaking** — Whenever multiple candidates are equally valid, one is chosen uniformly at random. Candidate lists are sorted before sampling for reproducibility with a fixed seed.
 
 ---
 
-## 4. Strategy Reference
+## 4. Geometric Strategy Reference
 
 ### 4.1 Random
 
 **File:** `strategy_random.py`
 
-The baseline. Each sequence is simply a uniform random sample of `seq_length` boxes without replacement, drawn independently using `random.sample`. There is no structural rule beyond the first pick — the first pick and all subsequent picks are all drawn simultaneously from a shuffle.
+The unconditional baseline. Each sequence is a uniform random sample of `seq_length` boxes drawn via `random.sample`. No structural rule is applied — all picks are drawn simultaneously from a shuffle, so the "first pick is random" rule is trivially satisfied.
 
-**Entropy:** Near-maximum (~0.99 H/H_max). All transitions roughly equally probable.
+**Entropy:** Near-maximum (~0.99 H/H_max). All transitions roughly equally probable. z_entropy is close to zero (transitions are no more structured than a random pairing of the same labels).
 
 ---
 
@@ -121,16 +148,16 @@ The baseline. Each sequence is simply a uniform random sample of `seq_length` bo
 
 **File:** `strategy_rowwise.py`
 
-**Rule:** After the first random pick, each subsequent pick is chosen uniformly at random from the **unvisited boxes in the same row** as the current box. When the current row is exhausted, a random fallback picks any remaining box, and the rule restarts from that box's row.
+**Rule:** After the first random pick, each subsequent pick is chosen uniformly at random from the **unvisited boxes in the same row** as the current box. When that row is exhausted, a random fallback picks any remaining box, and the rule restarts from that new box's row.
 
-**Key behaviour:** Within a row segment, order is random (not sequential). The sequence is partitioned into row-runs of varying length, separated by random jumps.
+**Key behaviour:** Within a row segment, order is random (not sequential). The sequence partitions into row-runs of varying length, separated by random jumps across rows.
 
 **Example (4×4, seq_length=6):**
 ```
 Pick 1 (random): 3   → row 0
 Pick 2 (row 0):  1   → row 0
 Pick 3 (row 0):  4   → row 0
-Pick 4 (row 0):  2   → row 0  [row 0 now exhausted]
+Pick 4 (row 0):  2   → row 0  [row exhausted]
 Pick 5 (random): 7   → row 1
 Pick 6 (row 1):  6
 ```
@@ -141,16 +168,14 @@ Pick 6 (row 1):  6
 
 **File:** `strategy_rowwise_sequential.py`
 
-**Rule:** The canonical order is `1, 2, 3, …, N²` (left-to-right, top-to-bottom). A random starting index is chosen uniformly in `[0, N²)`. The sequence takes `seq_length` consecutive entries from this canonical order, wrapping modularly past the last box back to box 1.
-
-This strategy is fully deterministic given a starting index — no further randomness is applied after the first pick.
+**Rule:** The canonical order `1, 2, 3, …, N²` (left-to-right, top-to-bottom) is established once. A random starting index is chosen uniformly in `[0, N²)`. The sequence takes `seq_length` consecutive entries from this order, wrapping modularly.
 
 **Example (4×4, seq_length=6, start=13):**
 ```
 13 → 14 → 15 → 16 → 1 → 2
 ```
 
-**Entropy:** ~0.51 H/H_max. Only N² distinct transitions are possible (each box has exactly one successor in the canonical order), severely limiting entropy.
+**Entropy:** ~0.51 H/H_max. Only N² distinct transitions are possible (each box has exactly one successor), severely limiting entropy.
 
 ---
 
@@ -158,13 +183,11 @@ This strategy is fully deterministic given a starting index — no further rando
 
 **File:** `strategy_center_out_radial.py`
 
-**Rule:** After the first random pick, at each step inspect the **grid neighbours** (not all boxes) of the current box. Among those neighbours that are (a) unvisited and (b) strictly farther from the geometric grid centre than the current box, pick the one with maximum distance. If no such outward neighbour exists, fall back to a random pick and restart.
+**Rule:** After the first random pick, at each step inspect the **grid neighbours** of the current box. Among those that are unvisited and strictly farther from the geometric centre than the current box, pick the one with maximum distance. If none exists, fall back to a random pick from all remaining boxes and restart.
 
-**Distance metric:** Euclidean from box centre to grid geometric centre `((N-1)/2, (N-1)/2)`.
+**Distance:** Euclidean from box centre to `((N-1)/2, (N-1)/2)`, precomputed once per `generate_sequences` call.
 
-**Distances precomputed** once per `generate_sequences` call and reused across all sequences.
-
-**Key behaviour:** The sequence moves outward from wherever it starts. Boxes at the perimeter are the last to be reached; interior boxes early in the sequence trigger frequent fallbacks because their outward neighbours may already be visited.
+**Key behaviour:** The sequence moves outward from wherever it starts. Interior starts trigger more frequent fallbacks because outward neighbours are quickly exhausted.
 
 ---
 
@@ -172,19 +195,15 @@ This strategy is fully deterministic given a starting index — no further rando
 
 **File:** `strategy_center_out_spiral.py`
 
-**Rule:** A clockwise outward spiral is precomputed from each starting box. The spiral uses the **fixed-leg expansion scheme**: legs cycle through directions L→U→R→D with lengths 1, 1, 2, 2, 3, 3, 4, 4, … The starting direction is chosen randomly from {L, U} if both are in bounds, otherwise the available one, otherwise R or D.
-
-Position always advances within bounds; out-of-bounds steps freeze the position for that step. The spiral visits every box exactly once. The sequence follows this precomputed order, collecting only unvisited boxes.
+**Rule:** A clockwise outward spiral is precomputed from the first (random) pick using the **fixed-leg expansion scheme**: directions cycle L→U→R→D with leg lengths 1, 1, 2, 2, 3, 3, 4, 4, … The starting direction is chosen randomly from {L, U} if both are in bounds; otherwise whichever is available; otherwise R or D for corners. Position always advances in bounds; out-of-bounds steps freeze position for that step. The spiral covers all N² boxes exactly once.
 
 **Verified examples (4×4):**
 
-| Start | Spiral path (first 6) |
-|-------|----------------------|
+| Start | First 6 boxes |
+|-------|--------------|
 | 6 | 6 → 5 → 1 → 2 → 3 → 7 |
 | 10 | 10 → 9 → 5 → 6 → 7 → 11 |
-| 13 | 13 → 9 → 10 → 14 → [fallback] |
-
-**Entropy:** ~0.70 H/H_max. The fixed spiral structure concentrates transitions along specific paths, but the random start creates diversity.
+| 13 | 13 → 9 → 10 → 14 → [fallback] → … |
 
 ---
 
@@ -192,11 +211,7 @@ Position always advances within bounds; out-of-bounds steps freeze the position 
 
 **File:** `strategy_neighbor_first.py`
 
-**Rule:** After the first random pick, each pick must be an **unvisited grid neighbour** of the current box. If no unvisited neighbours remain, fall back to a random pick from all remaining boxes and restart.
-
-This is a **strict structural** rule, not probabilistic — if a valid neighbour exists, the next pick *must* be one of them (chosen uniformly at random from all valid neighbours).
-
-**Key behaviour:** Produces spatially contiguous runs until the current position is surrounded, then jumps. Similar to Random Walk but the fallback restarts cleanly rather than continuing the walk metaphor.
+**Rule:** Each pick must be an unvisited cardinal neighbour of the current box. If no unvisited neighbours remain, fall back to a random pick from all remaining boxes and restart. This is a strict structural rule — not probabilistic — so whenever a valid neighbour exists the next pick *must* be one.
 
 ---
 
@@ -204,9 +219,9 @@ This is a **strict structural** rule, not probabilistic — if a valid neighbour
 
 **File:** `strategy_nearest_first.py`
 
-**Rule:** After the first random pick, each pick is the **globally nearest unvisited box** by Euclidean distance between box centres, across the entire remaining pool (not just neighbours). Ties broken randomly.
+**Rule:** After the first random pick, each pick is the globally nearest unvisited box by Euclidean distance from the current box's centre. Ties broken randomly. No fallback is needed: there is always an unvisited box while the sequence is incomplete.
 
-**Key behaviour:** Produces locally tight clusters that grow outward from the starting position. Tends to sweep nearby regions completely before jumping across the grid.
+**Key behaviour:** Produces spatially compact clusters radiating outward from the start.
 
 ---
 
@@ -214,11 +229,9 @@ This is a **strict structural** rule, not probabilistic — if a valid neighbour
 
 **File:** `strategy_farthest_first.py`
 
-**Rule:** After the first random pick, each pick is the **globally farthest unvisited box** by Euclidean distance from the current box. Ties broken randomly.
+**Rule:** After the first random pick, each pick is the globally farthest unvisited box by Euclidean distance from the current box. Ties broken randomly.
 
-**Key behaviour:** Produces sequences that jump maximally across the grid at every step, maximising spatial spread. Tends to bounce between opposite corners/edges.
-
-**Entropy:** ~0.62 H/H_max. Fewer transitions are possible from a given box (only the farthest boxes qualify), creating a sparser transition matrix than random.
+**Key behaviour:** Sequence jumps maximally across the grid at every step. Tends to alternate between opposite corners and edges.
 
 ---
 
@@ -226,11 +239,11 @@ This is a **strict structural** rule, not probabilistic — if a valid neighbour
 
 **File:** `strategy_checkerboard.py`
 
-**Colour rule:** Box `b` is **white** if `(row + col) % 2 == 0`, **black** otherwise (0-indexed coordinates). For N=4 this gives exactly 8 boxes per colour.
+**Colour convention:** Box b is **white** if `(row + col) % 2 == 0`, **black** otherwise (0-indexed). For even N, exactly N²/2 boxes of each colour exist.
 
-**Rule:** The first pick's colour determines the sequence colour. All subsequent picks are drawn uniformly at random from unvisited boxes of the **same colour**. If the colour pool is exhausted before `seq_length` boxes are collected, the fallback draws from the opposite colour.
+**Rule:** The first pick's colour determines the sequence colour. All subsequent picks are drawn uniformly at random from remaining unvisited boxes of the **same colour**. If that colour pool is exhausted before `seq_length` boxes are collected, the fallback draws from the opposite colour.
 
-**Key behaviour:** The spatial structure of a checkerboard means no two consecutive picks in the sequence are grid neighbours (since same-colour boxes are never adjacent), producing a distinctive non-local transition pattern.
+**Key behaviour:** No two consecutive picks can be cardinal neighbours (same-colour boxes are never adjacent), creating a distinctive non-local transition pattern.
 
 ---
 
@@ -238,13 +251,9 @@ This is a **strict structural** rule, not probabilistic — if a valid neighbour
 
 **File:** `strategy_knights_move.py`
 
-**Rule:** After the first random pick, each pick must be reachable from the current box by a **single chess knight move** (L-shaped: 2 squares in one axis, 1 in the other), and must be unvisited. If no valid knight destinations remain, fall back to a random pick and restart.
+**Rule:** Each pick must be reachable from the current box by a single chess knight move (2+1 squares in any axis orientation). Pick uniformly at random from all valid unvisited knight destinations. If none remain, fall back to a random pick and restart.
 
-**Knight destinations from box b:** up to 8 cells at offsets `(±1,±2)` and `(±2,±1)`, filtered to those in bounds.
-
-**Note on 4×4 grids:** Every box has at least 2 valid knight destinations on an empty board (corners reach 2, most others reach 3–4). Dead ends occur only after several boxes have been visited.
-
-**Entropy:** ~0.72 H/H_max. The knight's non-local, symmetric movement creates a rich but constrained transition structure.
+**Note:** On a 4×4 board every box has at least 2 valid knight destinations on an empty board. Dead ends arise only after several boxes have been visited.
 
 ---
 
@@ -252,11 +261,9 @@ This is a **strict structural** rule, not probabilistic — if a valid neighbour
 
 **File:** `strategy_snake.py`
 
-**Rule:** A snake (boustrophedon) traversal order is built for one of four orientations — **R** (rows, first row left→right), **L** (rows, first row right→left), **D** (columns, first column top→bottom), **U** (columns, first column bottom→top) — chosen uniformly at random per sequence.
+**Rule:** A sweep orientation — R (rows, first row left→right), L (rows, first row right→left), D (columns, first column top→bottom), or U (columns, first column bottom→top) — is chosen uniformly at random per sequence. Within each band, direction alternates (boustrophedon). A random starting index within the full N²-length snake order is chosen, and the sequence takes `seq_length` consecutive entries with modular wrap.
 
-Within each row/column, direction alternates. A random starting index is chosen within the full N²-length snake order, and the sequence takes `seq_length` consecutive entries with modular wrap.
-
-**Example R-orientation (4×4):**
+**Example (R-orientation, 4×4):**
 ```
  1  2  3  4
  8  7  6  5
@@ -264,25 +271,15 @@ Within each row/column, direction alternates. A random starting index is chosen 
 16 15 14 13
 ```
 
-**Entropy:** ~0.71 H/H_max. The four orientations and random offsets create variation, but within any sequence transitions are strictly sequential.
-
 ---
 
 ### 4.12 Perimeter Crawl
 
 **File:** `strategy_perimeter_crawl.py`
 
-**Perimeter definition:** The `4*(N-1)` outermost boxes in clockwise order: top row left→right, right column top→bottom (skipping top-right corner already counted), bottom row right→left (skipping bottom-right), left column bottom→top (skipping both bottom-left and top-left corners).
+**Perimeter:** The 4(N−1) outermost boxes in clockwise order. For a 4×4 grid: `1, 2, 3, 4, 8, 12, 16, 15, 14, 13, 9, 5`.
 
-For 4×4: `1, 2, 3, 4, 8, 12, 16, 15, 14, 13, 9, 5`
-
-**Rule:**
-- If the first pick **is on the perimeter**: choose CW or CCW randomly, crawl from there.
-- If the first pick **is interior**: find the nearest perimeter box (Euclidean, ties broken randomly), pick it, then begin the crawl CW or CCW.
-
-The crawl wraps around the ring as needed. Already-visited perimeter boxes are skipped. If the entire perimeter is exhausted, remaining picks are drawn randomly.
-
-**Entropy:** ~0.60 H/H_max. The crawl concentrates transitions along the 12-box perimeter ring, producing a highly constrained transition matrix.
+**Rule:** If the first pick is on the perimeter, crawl CW or CCW (chosen randomly). If the first pick is interior, first pick the nearest perimeter box (Euclidean, ties broken randomly), then begin the crawl. Already-visited perimeter boxes are skipped. If the entire perimeter is exhausted, remaining picks are drawn randomly.
 
 ---
 
@@ -290,24 +287,19 @@ The crawl wraps around the ring as needed. Already-visited perimeter boxes are s
 
 **File:** `strategy_islands.py`
 
-**Structure:** A sequence of `seq_length` boxes is assembled as `seq_length // 3` islands of exactly 3 boxes each (remainder handled if `seq_length` is not divisible by 3).
+**Structure:** A sequence of `seq_length` boxes is built as `seq_length // 3` islands of exactly 3 boxes each. Any remainder is filled as a partial island.
 
 **Island construction:**
-1. Pick a **seed** uniformly at random from all remaining unvisited boxes.
-2. Collect the seed's **unvisited grid neighbours**.
-3. Pick **2 neighbours** uniformly at random (without replacement within this step) to complete the island.
-4. If fewer than 2 neighbours are available, fill the island with random picks from the remaining pool.
+1. Pick a seed uniformly at random from all remaining unvisited boxes.
+2. Collect the seed's unvisited cardinal neighbours.
+3. Pick 2 neighbours uniformly at random (without replacement). If fewer than 2 are available, fill with random picks from the remaining pool.
 
-**Key behaviour:** Each island is a spatially compact cluster of 3. The seed-then-neighbours construction ensures islands are connected (the seed is adjacent to both selected neighbours), but islands are not required to be spatially separated from each other.
-
-**Examples (4×4):**
+**Examples:**
 ```
-Island 1: 1 → 2 → 5    (seed=1, neighbours 2 and 5)
-Island 2: 7 → 8 → 11   (seed=7, neighbours 8 and 11)
+Island 1: seed=1, neighbours 2 and 5  → [1, 2, 5]
+Island 2: seed=7, neighbours 8 and 11 → [7, 8, 11]
 Full sequence: [1, 2, 5, 7, 8, 11]
 ```
-
-**Entropy:** ~0.92 H/H_max. High entropy because seeds re-randomize globally, but within each island transitions are locally constrained to neighbours.
 
 ---
 
@@ -315,9 +307,9 @@ Full sequence: [1, 2, 5, 7, 8, 11]
 
 **File:** `strategy_random_walk.py`
 
-**Rule:** After the first random pick, each step moves to a uniformly random **unvisited grid neighbour** of the current box — a self-avoiding random walk on the grid graph. If the walk is trapped (no unvisited neighbours), teleport to a uniformly random unvisited box and resume.
+**Rule:** After the first random pick, each step moves to a uniformly random **unvisited cardinal neighbour** of the current box — a self-avoiding random walk on the grid graph. If the walk is trapped, teleport to a uniformly random unvisited box and resume.
 
-**Difference from Neighbor First:** Both strategies are structurally nearly identical. The conceptual distinction is that Random Walk emphasises the *walk* metaphor (continuous movement along edges), while Neighbor First emphasises the *constraint* metaphor (next pick must be adjacent). In practice their implementations and entropies are identical (~0.72 H/H_max).
+Structurally equivalent to Neighbor First; the conceptual framing emphasises continuous movement rather than constraint.
 
 ---
 
@@ -325,21 +317,9 @@ Full sequence: [1, 2, 5, 7, 8, 11]
 
 **File:** `strategy_diagonal_sweep.py`
 
-**Diagonal convention:** Anti-diagonals defined by constant `k = row + col` (0-indexed). For a 4×4 grid, `k` runs from 0 to 6:
+**Diagonal convention:** Anti-diagonals defined by constant `k = row + col` (0-indexed). For a 4×4 grid, k ranges from 0 (box 1 only) to 6 (box 16 only). Within each diagonal, boxes are ordered top-to-bottom.
 
-```
-k=0: [1]
-k=1: [2, 5]
-k=2: [3, 6, 9]
-k=3: [4, 7, 10, 13]
-k=4: [8, 11, 14]
-k=5: [12, 15]
-k=6: [16]
-```
-
-**Rule:** The first pick determines its diagonal `k₀`. Diagonals are then swept in order `k₀, k₀+1, …` (modularly wrapping around after `k=2*(N-1)`). Within each diagonal, the available unvisited boxes are shuffled and added to the sequence until `seq_length` is reached.
-
-**Entropy:** ~0.72 H/H_max. The diagonal structure constrains which boxes transition to which, but the random diagonal start and intra-diagonal shuffle create variety.
+**Rule:** The first pick's diagonal k₀ is the starting diagonal. Diagonals are swept in order k₀, k₀+1, … wrapping modularly. Within each diagonal, available unvisited boxes are shuffled and added to the sequence until `seq_length` is reached. Exhausted diagonals are skipped.
 
 ---
 
@@ -353,13 +333,9 @@ k=6: [16]
 w(b) = 1 / dist(b, centre) ^ WEIGHT_POWER
 ```
 
-where `dist` is Euclidean distance to the geometric centre and `WEIGHT_POWER = 1.0` (module-level constant, easily tuned). Boxes exactly at the centre (possible for odd N) receive a large finite weight (10× the maximum finite weight).
+where `dist` is Euclidean distance to the geometric centre and `WEIGHT_POWER = 1.0` (exposed module-level constant). Boxes at the exact centre receive a large finite weight (10× the maximum finite weight). Picks are drawn via weighted sampling (`random.choices`) over the remaining available pool using the **pre-computed fixed weights** — weights are not renormalised after each pick.
 
-Picks are drawn via weighted random sampling (`random.choices`) over the remaining available pool, using the **pre-computed fixed weights**. Weights are **not renormalised** as boxes are removed — the probability of selecting box `b` from pool `A` is `w(b) / Σ_{j∈A} w(j)`.
-
-**Entropy:** ~0.97 H/H_max. Despite the centre bias, the soft probabilistic weighting leaves most boxes accessible, producing near-random entropy.
-
-**Tuning:** Increasing `WEIGHT_POWER` sharpens the centre bias; at very high values the strategy approaches a deterministic center-first ordering.
+**Tuning:** Increasing `WEIGHT_POWER` sharpens the centre bias. At very high values the strategy approaches deterministic centre-first ordering.
 
 ---
 
@@ -367,22 +343,128 @@ Picks are drawn via weighted random sampling (`random.choices`) over the remaini
 
 **File:** `strategy_hilbert_curve.py`
 
-**Rule:** The Hilbert curve traversal order for the N×N grid is precomputed using the standard `d2xy` algorithm (converts Hilbert distance `d` to `(x, y)` coordinates). For non-power-of-2 `N`, the next larger power-of-2 grid is used and out-of-bounds cells are filtered.
+**Rule:** The Hilbert curve traversal order for the N×N grid is precomputed using the standard `d2xy` algorithm (converts Hilbert distance d to (x,y) coordinates). For non-power-of-2 N, the next-larger power-of-2 grid is used and out-of-bounds cells are filtered. The 4×4 Hilbert order is:
 
-The 4×4 Hilbert order is:
 ```
 1, 2, 6, 5, 9, 13, 14, 10, 11, 15, 16, 12, 8, 7, 3, 4
 ```
 
-A random starting index is chosen within this order. The sequence takes `seq_length` consecutive entries with modular wrap.
+A random starting index within this order is chosen, and the sequence takes `seq_length` consecutive entries with modular wrap.
 
-**Key property:** The Hilbert curve is space-filling and locality-preserving — boxes that are close in the 1D Hilbert order tend to be close in 2D space.
+**Key property:** Spatial locality is preserved — boxes close together in the 1D Hilbert order tend to be close in 2D space.
 
-**Entropy:** ~0.51 H/H_max — tied with Row-wise Sequential and for the same reason: the strategy is a fixed-offset read of a deterministic path, so only N² transitions are possible.
+**Entropy:** ~0.51 H/H_max — tied with Row-wise Sequential and for the same reason: both are fixed-offset reads of a deterministic path, so only N² distinct transitions are possible.
 
 ---
 
-## 5. Utility: `drawSample`
+## 5. Image-Guided Strategy Reference
+
+### 5.1 Image Pipeline
+
+All four image strategies follow an identical flow, split between a one-time setup phase and a per-sequence phase.
+
+**Before the sequence loop (once per `generate_sequences` call):**
+
+1. `load_image(img_index)` — load `images/img_<n>.png` as (H,W,3) uint8 RGB.
+2. `resize_to_multiple(img_rgb, N)` — resize to P×P where P = round(H/N)·N, using bilinear interpolation.
+3. `_compute_<metric>(img_rgb)` — compute the metric for every pixel → (P,P) float64 array.
+4. Compute `metric_sd = metric.std()` (used to scale noise).
+
+**Inside the loop (once per sequence):**
+
+5. `add_noise(metric, metric_sd, A)` — draw symmetric uniform noise ∈ [−SD·A, +SD·A] fresh for this sequence and add to the metric map.
+6. `grid_weights(noisy_metric, N)` — divide into N×N cells of (P/N × P/N) pixels, average each cell, normalise the N×N result to [0.1, 0.9] via `b = 0.1 + 0.8·(a−min)/(max−min)`, flatten row-wise to a length-N² weight vector.
+7. Draw `seq_length` boxes via `random.choices(available, weights=pool_weights)` without replacement, using the weight vector. Weights are **not renormalised** after each pick.
+
+**Normalisation formula:** `b = 0.1 + 0.8 · (a − min(a)) / (max(a) − min(a))` maps any cell value to [0.1, 0.9]. The floor of 0.1 ensures no cell is ever unselectable. If all cells are identical (flat metric), all weights are set to 0.5.
+
+**Noise constant `A`:** Exposed as a module-level constant (`NOISE_A = 0.3` by default) at the top of each strategy file. Setting A=0 disables noise entirely, making weights identical across all sequences for a given image.
+
+---
+
+### 5.2 Image Salience
+
+**File:** `strategy_image_salience.py`
+
+**Metric:** Difference-of-Gaussians (DoG) applied to the luminance channel:
+
+```
+saliency(x,y) = G(x,y; σ_centre) − G(x,y; σ_surround)
+```
+
+Centre and surround standard deviations are `SIGMA_CENTER = 2.0` and `SIGMA_CENTER × SURROUND_RATIO = 8.0` (both exposed constants). Positive values indicate bright-on-dark regions; negative values indicate dark-on-bright. Both are preserved through normalisation, so both types of centre-surround contrast are treated as salient.
+
+**TODO:** Replace with a full Itti-Koch saliency implementation including orientation-selective Gabor channels, colour opponency (R-G, B-Y), and the iterative normalisation operator N(·) from Itti, Koch & Niebur (1998).
+
+**Exposed constants:**
+```python
+SIGMA_CENTER   = 2.0    # centre Gaussian σ in pixels
+SURROUND_RATIO = 4.0    # σ_surround = SURROUND_RATIO × SIGMA_CENTER
+NOISE_A        = 0.3
+```
+
+---
+
+### 5.3 Image Contrast
+
+**File:** `strategy_image_contrast.py`
+
+**Metric:** Local RMS contrast (local standard deviation) on the luminance channel, computed via box-filter variance:
+
+```
+var(x,y) = E[I²](x,y) − E[I]²(x,y)
+rms(x,y) = sqrt(max(var, 0))
+```
+
+where E[·] denotes a uniform (box) filter with window size K = `max(3, floor(P/10))` forced odd. This scales with image resolution: a 400-pixel image uses a 40-pixel window; a 200-pixel image uses a 21-pixel window.
+
+**Exposed constant:**
+```python
+NOISE_A = 0.3
+```
+
+---
+
+### 5.4 Image Colour Concentration
+
+**File:** `strategy_image_color_concentration.py`
+
+**Metric:** Per-pixel HSV saturation derived from RGB:
+
+```
+S(x,y) = (max(R,G,B) − min(R,G,B)) / max(R,G,B)
+S = 0  when max(R,G,B) = 0  (pure black)
+```
+
+Computed directly from the float RGB array; no HSV conversion library is used. Achromatic pixels (R=G=B) have S=0 and map to the floor weight of 0.1 after normalisation — they remain selectable but are least likely.
+
+**Exposed constant:**
+```python
+NOISE_A = 0.3
+```
+
+---
+
+### 5.5 Image Texture
+
+**File:** `strategy_image_texture.py`
+
+**Metric:** Local variance on the luminance channel, using the same box-filter formulation as the contrast strategy:
+
+```
+texture(x,y) = max(E[I²] − E[I]², 0)
+```
+
+The raw variance (not its square root) is used, so high-frequency texture regions are emphasised more strongly than in the contrast strategy. Window size K = `max(3, floor(P/10))` forced odd.
+
+**Exposed constant:**
+```python
+NOISE_A = 0.3
+```
+
+---
+
+## 6. Utility: `drawSample`
 
 **File:** `draw_sample.py`
 
@@ -390,36 +472,51 @@ A random starting index is chosen within this order. The sequence takes `seq_len
 
 ```python
 drawSample(
-    grid_size     : int  = 4,
-    seq_length    : int  = 6,
-    num_seq       : int  = 100,
-    strategy_name : str  = "random",
-    save_path     : str  = None,      # None → plt.show()
-    seed          : int  = None,      # None → non-reproducible
+    grid_size     : int           = 4,
+    seq_length    : int           = 6,
+    num_seq       : int           = 100,
+    strategy_name : str           = "random",
+    img_index     : Optional[int] = None,
+    save_path     : Optional[str] = None,
+    seed          : Optional[int] = None,
 ) -> None
 ```
 
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `grid_size` | Side length N of the square grid |
+| `seq_length` | Number of boxes per sequence |
+| `num_seq` | Number of sequences = number of subplot panels |
+| `strategy_name` | Strategy name with or without `strategy_` prefix |
+| `img_index` | 1-based image index (required for image strategies; raises `ValueError` if omitted) |
+| `save_path` | Output file path; `None` calls `plt.show()` |
+| `seed` | Optional RNG seed for reproducibility |
+
+### Image Strategy Detection
+
+`drawSample` calls `inspect.signature(mod.generate_sequences)` and checks for `img_index` in the parameter list. No manual registry is maintained — any strategy module that includes `img_index` in its `generate_sequences` signature is treated as image-based.
+
 ### Layout
 
-Subplots are arranged in a near-square grid: `n_cols = ceil(sqrt(num_seq))`, `n_rows = ceil(num_seq / n_cols)`. Incomplete last rows are filled with blank (hidden) axes.
+Subplots are arranged in a near-square grid: `n_cols = ceil(sqrt(num_seq))`, `n_rows = ceil(num_seq / n_cols)`. Incomplete rows are padded with hidden axes.
 
 ### Visual Encoding
 
 | Element | Encoding |
 |---------|----------|
-| Unvisited cell | Dark navy (`#1a1a2e`) |
+| Unvisited cell | Dark navy `#1a1a2e` |
 | Visited cell | `plasma` colormap: deep purple (pick 1) → bright yellow (pick `seq_length`) |
 | Number inside cell | Visit order (1-indexed) |
-| Number colour | White for dark cells, near-black for bright cells |
-| Subplot title | Sequence index (`#1`, `#2`, …) |
-| Colorbar | Maps colour to visit order |
+| Colorbar | Right side; maps colour to visit order |
+| Subplot title | Sequence index (#1, #2, …) |
+| Figure title | Strategy name, img index if applicable, grid parameters |
 
 ### Tunable Constants
 
-All visual parameters are module-level constants at the top of `draw_sample.py`:
-
 ```python
-CMAP_NAME       = "plasma"     # any matplotlib colormap
+CMAP_NAME       = "plasma"    # any matplotlib colormap name
 UNVISITED_COLOR = "#1a1a2e"
 VISITED_ALPHA   = 0.92
 LABEL_FONTSIZE  = 5.5
@@ -435,38 +532,48 @@ FIG_DPI         = 150
 ```bash
 python draw_sample.py <strategy> [options]
 
-Options:
-  -g, --grid_size   Grid side length (default: 4)
-  -l, --seq_length  Sequence length (default: 6)
-  -n, --num_seq     Number of sequences (default: 100)
-  -s, --save        Output file path (default: plt.show())
-      --seed        RNG seed (default: None)
+  -g, --grid_size    Grid side length (default: 4)
+  -l, --seq_length   Sequence length (default: 6)
+  -n, --num_seq      Number of sequences (default: 100)
+  -i, --img_index    Image index for image strategies (e.g. 1 → images/img_1.png)
+  -s, --save         Output file path (default: plt.show())
+      --seed         RNG seed (default: None)
 ```
 
 ---
 
-## 6. Utility: `calculate_entropy`
+## 7. Utility: `calculate_entropy`
 
 **File:** `calculate_entropy.py`
 
 ### Method
 
+**H (global transition entropy):**
 1. Generate `num_seq` sequences via the named strategy.
-2. Build an N²×N² transition count matrix **T** where `T[i, j]` is incremented each time box `j` is selected immediately after box `i` (0-indexed internally). Each sequence of length `seq_length` contributes `seq_length - 1` transitions.
-3. Normalise: `P = T / T.sum()` — this is the **joint distribution** P(i→j).
-4. Compute Shannon entropy: `H = -Σ P(i,j) * log₂(P(i,j))` over all non-zero cells.
-5. Report `H / H_max` where `H_max = log₂(N² × (N²-1))` is the entropy of a uniform distribution over all ordered pairs of distinct boxes.
+2. Collect all consecutive (from, to) box pairs across all sequences. Cross-sequence transitions are excluded by construction (pairs are taken only within each sequence).
+3. Encode each pair as a single integer key; count unique keys.
+4. Compute `P(i→j) = count(i→j) / total_transitions`.
+5. Compute `H = −Σ P log₂(P)` over all non-zero entries.
+6. Report `H / H_max` where `H_max = log₂(N² × (N²−1))`.
+
+**z_entropy (shuffle null):**
+1. For each of `N_SHUFFLES = 200` iterations: randomly permute the `from` array while holding `to` fixed (mirrors the MATLAB `compute_zscored_global_entropy.m` implementation). This breaks real sequential structure while preserving each label's marginal frequency.
+2. Compute H on each shuffled transition set → distribution `H_shuffle`.
+3. `z_entropy = (H − mean(H_shuffle)) / std(H_shuffle, ddof=1)`.
+
+Positive z: transitions more spread out than a random pairing of the same labels. Negative z: transitions more concentrated/predictable than chance.
 
 ### Signature
 
 ```python
 calculate_entropy(
-    grid_size     : int  = 4,
-    seq_length    : int  = 6,
-    num_seq       : int  = 100,
-    strategy_name : str  = "random",
-    seed          : int  = None,
-    verbose       : bool = True,
+    grid_size     : int           = 4,
+    seq_length    : int           = 6,
+    num_seq       : int           = 100,
+    strategy_name : str           = "random",
+    img_index     : Optional[int] = None,
+    seed          : Optional[int] = None,
+    verbose       : bool          = True,
 ) -> dict
 ```
 
@@ -474,64 +581,120 @@ calculate_entropy(
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `entropy_bits` | float | Shannon entropy in bits |
-| `entropy_nats` | float | Shannon entropy in nats |
+| `entropy_bits` | float | H in bits |
+| `entropy_nats` | float | H in nats |
 | `h_max_bits` | float | log₂(N²×(N²−1)) — theoretical maximum |
 | `h_normalized` | float | H / H_max ∈ [0, 1] |
+| `z_entropy` | float | Z-scored H against shuffle null |
+| `h_shuffle_mean` | float | Mean H across shuffles (bits) |
+| `h_shuffle_std` | float | Std H across shuffles (bits) |
+| `h_shuffle_all` | ndarray (N_SHUFFLES,) | All individual shuffle entropies |
 | `n_transitions` | int | Total transitions observed |
-| `transition_matrix` | ndarray (N²×N²) | Joint P(i→j) |
+| `transition_matrix` | ndarray (N²,N²) | Joint P(i→j) |
 | `strategy_name` | str | Strategy name as passed |
 | `grid_size` | int | Grid side length |
 | `seq_length` | int | Sequence length |
 | `num_seq` | int | Number of sequences generated |
 
-### Interpreting H_normalized
+### Interpreting the Metrics
 
 | H/H_max | Interpretation |
 |---------|---------------|
-| ≈ 1.0 | Transitions nearly uniformly distributed — strategy is close to random in sequential behaviour |
-| 0.7–0.9 | Moderate structure — transitions are constrained but diverse |
-| 0.5–0.7 | Strong structure — many transitions concentrated on a small set of pairs |
-| < 0.5 | Highly deterministic — very few distinct transitions occur |
+| ≈ 1.0 | Transitions nearly uniformly distributed; strategy behaves close to random |
+| 0.7–0.9 | Moderate structure; transitions constrained but diverse |
+| 0.5–0.7 | Strong structure; many transitions concentrated on a small set of pairs |
+| < 0.5 | Highly deterministic; very few distinct transitions occur |
+
+| z_entropy | Interpretation |
+|-----------|---------------|
+| Near 0 | Transition structure is no greater than expected by random pairing |
+| Strongly negative | Transitions far more concentrated than a random pairing of the same labels |
+| Positive | Transitions more spread out than random pairing (unusual; suggests anti-structure) |
+
+### Tunable Constant
+
+```python
+N_SHUFFLES : int = 200    # shuffle iterations for z_entropy null distribution
+```
 
 ### CLI
 
 ```bash
 python calculate_entropy.py <strategy> [options]
 
-Options:
-  -g, --grid_size   Grid side length (default: 4)
-  -l, --seq_length  Sequence length (default: 6)
-  -n, --num_seq     Number of sequences (default: 100)
-      --seed        RNG seed (default: None)
-  -q, --quiet       Suppress printed summary
+  -g, --grid_size    Grid side length (default: 4)
+  -l, --seq_length   Sequence length (default: 6)
+  -n, --num_seq      Number of sequences (default: 100)
+  -i, --img_index    Image index for image strategies
+      --seed         RNG seed (default: None)
+  -q, --quiet        Suppress printed summary
 ```
 
 ---
 
-## 7. Design Decisions and Edge Cases
+## 8. Utility: `compare_strategies_entropy`
 
-**Why 1-indexed boxes?** The 1-indexed labelling matches natural human notation (boxes 1–16 rather than 0–15) and the user's original specification. All internal arithmetic converts to 0-indexed `(row, col)` pairs only where needed.
+**File:** `compare_strategies_entropy.py`
 
-**Why precompute distances?** For strategies like `center_out_radial` and `weighted_center_bias`, distances from the geometric centre are identical across all sequences. Computing them once and reusing avoids redundant work across potentially thousands of sequences.
+Runs all 17 geometric strategies and produces a scatter plot of H/H_max (x-axis) vs z_entropy (y-axis). Points are colour-coded by strategy category. Quadrant annotations describe the interpretation of each region.
 
-**Fallback design:** The dead-end fallback (random pick, rule restarts) is uniform across all strategies. This ensures `seq_length` is always exactly satisfied regardless of grid size or rule stringency. It also means even highly constrained strategies (e.g. knight's move on a small grid) never fail.
-
-**Tie-breaking:** All tie-breaking sorts candidates before sampling to ensure that given the same RNG state, the same choice is always made. This makes behaviour reproducible with a fixed seed even when the internal candidate ordering might otherwise be non-deterministic (e.g. set iteration order in Python).
-
-**`seq_length > N²/2` with checkerboard:** If you request more picks than there are boxes of one colour, the strategy silently falls back to the opposite colour. For `seq_length ≤ N²/2` this never happens on a standard even-N grid.
-
-**Spiral for non-interior starts:** When the first pick is at a corner, the `_choose_start_dir` function falls through L/U checks (both may be out of bounds) to R or D. This is the only case where a spiral starts in a non-standard direction.
-
-**Hilbert curve for non-power-of-2 grids:** The standard `d2xy` algorithm requires N to be a power of 2. For arbitrary N (e.g. N=5), the next power of 2 (8) is used, and any `(x, y)` outside the N×N region is simply skipped. The resulting path still visits all N² boxes exactly once and preserves approximate spatial locality.
-
-**Perimeter crawl skip logic:** When the crawler encounters an already-visited perimeter box (only possible after a fallback places a box on the perimeter), it advances the index without adding a pick. A safety check detects if the entire remaining perimeter is visited and switches to a pure random fallback to avoid an infinite loop.
+```bash
+python compare_strategies_entropy.py -g 4 -l 6 -n 500 -s entropy_scatter.png
+```
 
 ---
 
-## 8. Extending the Library
+## 9. Utility: `compare_image_strategies_entropy`
 
-### Adding a Strategy
+**File:** `compare_image_strategies_entropy.py`
+
+Runs all 4 image strategies across every image found in `images/img_*.png`, plus Random as a plotted baseline and Hilbert Curve as a title-only reference. Produces a scatter plot of H/H_max vs z_entropy.
+
+**Visual encoding:**
+- **Colour** → image index (up to 12 distinct colours; cycles for larger collections)
+- **Marker shape** → strategy (○ Salience, □ Contrast, △ Colour Concentration, ◇ Texture)
+- **Random baseline** → large star (★), labelled directly on the plot
+- **Hilbert Curve** → not plotted; H/H_max and z_entropy shown in the figure title for reference
+
+Image discovery is automatic — any `img_*.png` file in the `images/` folder is included without code changes.
+
+```bash
+python compare_image_strategies_entropy.py -g 4 -l 6 -n 500 -s entropy_scatter_image.png
+```
+
+---
+
+## 10. Design Decisions and Edge Cases
+
+**Why 1-indexed boxes?** Matches natural human notation and the original specification. Internal arithmetic converts to 0-indexed `(row, col)` only where needed.
+
+**Why precompute distances?** For `center_out_radial` and `weighted_center_bias`, distances from the geometric centre are identical across all sequences. Computing once avoids redundant work over thousands of sequences.
+
+**Fallback design:** The uniform dead-end fallback guarantees `seq_length` is always exactly satisfied, regardless of how stringent the strategy rule is or how small the grid. Strategies never raise exceptions due to exhausted move sets.
+
+**Tie-breaking reproducibility:** All tie-breaking sorts candidates before sampling so that given the same RNG state, the same choice is always made, even when internal data structures (e.g. sets) have non-deterministic iteration order in Python.
+
+**Checkerboard and `seq_length > N²/2`:** If more picks are requested than there are boxes of one colour, the strategy silently falls back to the opposite colour for the remainder. For `seq_length ≤ N²/2` on even-N grids this never occurs.
+
+**Spiral for corner starts:** `_choose_start_dir` checks L then U; for corners where both are out of bounds it falls through to R then D.
+
+**Hilbert curve for non-power-of-2 grids:** `d2xy` requires power-of-2 N. For arbitrary N, the next-larger power is used and any cell outside the N×N region is filtered. The resulting path visits all N² boxes exactly once.
+
+**Perimeter crawl skip logic:** When the crawler encounters an already-visited perimeter box (possible only after a fallback lands on the perimeter), the index advances without adding a pick. A safety check detects full perimeter exhaustion and switches to random fallback to avoid an infinite loop.
+
+**Image resize rounding:** `P = round(H/N) * N`. For H=201, N=4, this gives P=200 rather than P=204, choosing the nearest multiple rather than always rounding up. This minimises information loss from resizing.
+
+**Noise timing:** Noise is added to the full P×P pixel-level metric map (before cell averaging), not to the N×N cell-average map. This means pixel-level spatial variation within each cell contributes to the noisy average in a realistic way, rather than just shifting the already-averaged cell values.
+
+**Noise does not overflow normalisation bounds:** The noise is added before normalisation. The normalisation formula always maps the noisy map's actual min and max to 0.1 and 0.9, so noise amplitude does not cause out-of-range weights regardless of A.
+
+**z_entropy asymmetry:** The shuffle permutes `from` while holding `to` fixed, following the original MATLAB implementation. This asymmetric shuffle tests whether the *source* of each transition is more structured than chance, not the destination.
+
+---
+
+## 11. Extending the Library
+
+### Adding a Geometric Strategy
 
 ```python
 # strategy_myname.py
@@ -557,8 +720,7 @@ def generate_sequences(
         seq.append(current)
 
         while len(seq) < seq_length:
-            # Apply your rule here
-            # ...
+            # Apply your rule here ...
             # Fallback: if no rule-valid candidates, pick randomly
             current = pick_and_remove(available)
             seq.append(current)
@@ -568,37 +730,81 @@ def generate_sequences(
     return sequences
 ```
 
-The strategy is automatically discovered by `drawSample` and `calculate_entropy` — pass `strategy_name="myname"` and the utilities will import `strategy_myname`.
+Pass `strategy_name="myname"` to `drawSample` and `calculate_entropy` — both utilities import `strategy_myname` automatically.
 
-### Adding a Visualisation Mode to `drawSample`
-
-The `_draw_sequence` function in `draw_sample.py` receives the full sequence as a list and the axes object. To add arrows showing transition order, for example:
+### Adding an Image-Guided Strategy
 
 ```python
-# Inside _draw_sequence, after drawing cells:
-for (a, b) in zip(seq[:-1], seq[1:]):
-    r1, c1 = get_row_col(a, N);  x1, y1 = c1 + 0.5, (N-1-r1) + 0.5
-    r2, c2 = get_row_col(b, N);  x2, y2 = c2 + 0.5, (N-1-r2) + 0.5
-    ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
-                arrowprops=dict(arrowstyle="->", color="white", lw=0.5))
+# strategy_image_mymetric.py
+
+from __future__ import annotations
+import random
+from typing import List, Optional
+import numpy as np
+from image_utils import load_image, resize_to_multiple, add_noise, grid_weights
+from grid_utils import all_boxes
+
+NOISE_A: float = 0.3    # ← expose prominently
+
+def _compute_mymetric(img_rgb: np.ndarray) -> np.ndarray:
+    """Return a (P, P) float64 metric map."""
+    ...
+
+def generate_sequences(
+    grid_size: int = 4,
+    seq_length: int = 6,
+    n_seq: int = 100,
+    img_index: int = 1,          # ← presence of this triggers image detection
+    seed: Optional[int] = None,
+) -> List[List[int]]:
+    N = grid_size
+    img_rgb   = load_image(img_index)
+    img_rgb   = resize_to_multiple(img_rgb, N)
+    metric    = _compute_mymetric(img_rgb)
+    metric_sd = float(metric.std())
+
+    boxes = all_boxes(N)
+    sequences = []
+
+    for _ in range(n_seq):
+        noisy   = add_noise(metric, metric_sd, NOISE_A)
+        weights = grid_weights(noisy, N)
+
+        available = list(boxes)
+        seq = []
+        while len(seq) < seq_length:
+            pool_w = [weights[b - 1] for b in available]
+            chosen = random.choices(available, weights=pool_w, k=1)[0]
+            available.remove(chosen)
+            seq.append(chosen)
+
+        sequences.append(seq)
+
+    return sequences
 ```
 
-### Computing Additional Entropy Metrics
+Both `drawSample` and `calculate_entropy` automatically detect `img_index` in the signature and will require it to be supplied at call time.
 
-The `transition_matrix` in the return dict of `calculate_entropy` is the full joint P(i→j). Row-normalising gives conditional distributions P(j|i) from which per-row (conditional) entropies can be computed:
+### Computing Additional Entropy Metrics from the Transition Matrix
 
 ```python
-result = calculate_entropy(...)
-P = result["transition_matrix"]    # shape (N², N²)
+result = calculate_entropy(strategy_name="neighbor_first",
+                           grid_size=4, seq_length=6, num_seq=500)
+P = result["transition_matrix"]    # shape (N², N²), joint P(i→j)
 
 # Conditional entropy H(next | current)
 row_sums = P.sum(axis=1, keepdims=True)
 with np.errstate(divide='ignore', invalid='ignore'):
-    P_cond = np.where(row_sums > 0, P / row_sums, 0)
-nonzero = P_cond > 0
-H_cond = -np.sum(P_cond[nonzero] * np.log2(P_cond[nonzero]))
+    P_cond = np.where(row_sums > 0, P / row_sums, 0.0)
+nz = P_cond > 0
+H_conditional = float(-np.sum(P_cond[nz] * np.log2(P_cond[nz])))
 
 # Marginal entropy H(box selected)
-P_marginal = P.sum(axis=0)         # sum over "from" axis
-H_marginal = -np.sum(P_marginal[P_marginal > 0] * np.log2(P_marginal[P_marginal > 0]))
+P_marginal = P.sum(axis=0)
+nz = P_marginal > 0
+H_marginal = float(-np.sum(P_marginal[nz] * np.log2(P_marginal[nz])))
+
+# Full null distribution for custom significance testing
+h_null = result["h_shuffle_all"]   # shape (N_SHUFFLES,)
+p_value = (h_null <= result["entropy_bits"]).mean()
 ```
