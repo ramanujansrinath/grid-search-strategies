@@ -82,7 +82,7 @@ A **sequence** is an ordered list of `seq_length` boxes, selected **without repl
 
 ## 2. Shared Infrastructure
 
-### 2.1 `grid_utils.py`
+### 2.1 `utils/grid_utils.py`
 
 All geometric strategy modules import from `grid_utils`. The module exposes:
 
@@ -101,7 +101,7 @@ All geometric strategy modules import from `grid_utils`. The module exposes:
 | `best_from` | `(candidates, key, available) → int` | Candidate with maximum `key`; ties broken randomly |
 | `worst_from` | `(candidates, key, available) → int` | Candidate with minimum `key`; ties broken randomly |
 
-### 2.2 `image_utils.py`
+### 2.2 `utils/image_utils.py`
 
 All image-guided strategy modules import from `image_utils`. The module exposes:
 
@@ -136,7 +136,7 @@ These rules apply **across all strategies**, geometric and image-guided:
 
 ### 4.1 Random
 
-**File:** `strategy_random.py`
+**File:** `strategies/strategy_random.py`
 
 The unconditional baseline. Each sequence is a uniform random sample of `seq_length` boxes drawn via `random.sample`. No structural rule is applied — all picks are drawn simultaneously from a shuffle, so the "first pick is random" rule is trivially satisfied.
 
@@ -146,7 +146,7 @@ The unconditional baseline. Each sequence is a uniform random sample of `seq_len
 
 ### 4.2 Row-wise
 
-**File:** `strategy_rowwise.py`
+**File:** `strategies/strategy_rowwise.py`
 
 **Rule:** After the first random pick, each subsequent pick is chosen uniformly at random from the **unvisited boxes in the same row** as the current box. When that row is exhausted, a random fallback picks any remaining box, and the rule restarts from that new box's row.
 
@@ -166,7 +166,7 @@ Pick 6 (row 1):  6
 
 ### 4.3 Row-wise Sequential
 
-**File:** `strategy_rowwise_sequential.py`
+**File:** `strategies/strategy_rowwise_sequential.py`
 
 **Rule:** The canonical order `1, 2, 3, …, N²` (left-to-right, top-to-bottom) is established once. A random starting index is chosen uniformly in `[0, N²)`. The sequence takes `seq_length` consecutive entries from this order, wrapping modularly.
 
@@ -181,7 +181,7 @@ Pick 6 (row 1):  6
 
 ### 4.4 Center-Out Radial
 
-**File:** `strategy_center_out_radial.py`
+**File:** `strategies/strategy_center_out_radial.py`
 
 **Rule:** After the first random pick, at each step inspect the **grid neighbours** of the current box. Among those that are unvisited and strictly farther from the geometric centre than the current box, pick the one with maximum distance. If none exists, fall back to a random pick from all remaining boxes and restart.
 
@@ -193,7 +193,7 @@ Pick 6 (row 1):  6
 
 ### 4.5 Center-Out Spiral
 
-**File:** `strategy_center_out_spiral.py`
+**File:** `strategies/strategy_center_out_spiral.py`
 
 **Rule:** A clockwise outward spiral is precomputed from the first (random) pick using the **fixed-leg expansion scheme**: directions cycle L→U→R→D with leg lengths 1, 1, 2, 2, 3, 3, 4, 4, … The starting direction is chosen randomly from {L, U} if both are in bounds; otherwise whichever is available; otherwise R or D for corners. Position always advances in bounds; out-of-bounds steps freeze position for that step. The spiral covers all N² boxes exactly once.
 
@@ -209,7 +209,7 @@ Pick 6 (row 1):  6
 
 ### 4.6 Neighbor First
 
-**File:** `strategy_neighbor_first.py`
+**File:** `strategies/strategy_neighbor_first.py`
 
 **Rule:** Each pick must be an unvisited cardinal neighbour of the current box. If no unvisited neighbours remain, fall back to a random pick from all remaining boxes and restart. This is a strict structural rule — not probabilistic — so whenever a valid neighbour exists the next pick *must* be one.
 
@@ -217,7 +217,7 @@ Pick 6 (row 1):  6
 
 ### 4.7 Nearest First
 
-**File:** `strategy_nearest_first.py`
+**File:** `strategies/strategy_nearest_first.py`
 
 **Rule:** After the first random pick, each pick is the globally nearest unvisited box by Euclidean distance from the current box's centre. Ties broken randomly. No fallback is needed: there is always an unvisited box while the sequence is incomplete.
 
@@ -227,7 +227,7 @@ Pick 6 (row 1):  6
 
 ### 4.8 Farthest First
 
-**File:** `strategy_farthest_first.py`
+**File:** `strategies/strategy_farthest_first.py`
 
 **Rule:** After the first random pick, each pick is the globally farthest unvisited box by Euclidean distance from the current box. Ties broken randomly.
 
@@ -237,7 +237,7 @@ Pick 6 (row 1):  6
 
 ### 4.9 Checkerboard
 
-**File:** `strategy_checkerboard.py`
+**File:** `strategies/strategy_checkerboard.py`
 
 **Colour convention:** Box b is **white** if `(row + col) % 2 == 0`, **black** otherwise (0-indexed). For even N, exactly N²/2 boxes of each colour exist.
 
@@ -249,7 +249,7 @@ Pick 6 (row 1):  6
 
 ### 4.10 Knight's Move
 
-**File:** `strategy_knights_move.py`
+**File:** `strategies/strategy_knights_move.py`
 
 **Rule:** Each pick must be reachable from the current box by a single chess knight move (2+1 squares in any axis orientation). Pick uniformly at random from all valid unvisited knight destinations. If none remain, fall back to a random pick and restart.
 
@@ -259,7 +259,7 @@ Pick 6 (row 1):  6
 
 ### 4.11 Snake
 
-**File:** `strategy_snake.py`
+**File:** `strategies/strategy_snake.py`
 
 **Rule:** A sweep orientation — R (rows, first row left→right), L (rows, first row right→left), D (columns, first column top→bottom), or U (columns, first column bottom→top) — is chosen uniformly at random per sequence. Within each band, direction alternates (boustrophedon). A random starting index within the full N²-length snake order is chosen, and the sequence takes `seq_length` consecutive entries with modular wrap.
 
@@ -275,7 +275,7 @@ Pick 6 (row 1):  6
 
 ### 4.12 Perimeter Crawl
 
-**File:** `strategy_perimeter_crawl.py`
+**File:** `strategies/strategy_perimeter_crawl.py`
 
 **Perimeter:** The 4(N−1) outermost boxes in clockwise order. For a 4×4 grid: `1, 2, 3, 4, 8, 12, 16, 15, 14, 13, 9, 5`.
 
@@ -285,7 +285,7 @@ Pick 6 (row 1):  6
 
 ### 4.13 Islands
 
-**File:** `strategy_islands.py`
+**File:** `strategies/strategy_islands.py`
 
 **Structure:** A sequence of `seq_length` boxes is built as `seq_length // 3` islands of exactly 3 boxes each. Any remainder is filled as a partial island.
 
@@ -305,7 +305,7 @@ Full sequence: [1, 2, 5, 7, 8, 11]
 
 ### 4.14 Random Walk
 
-**File:** `strategy_random_walk.py`
+**File:** `strategies/strategy_random_walk.py`
 
 **Rule:** After the first random pick, each step moves to a uniformly random **unvisited cardinal neighbour** of the current box — a self-avoiding random walk on the grid graph. If the walk is trapped, teleport to a uniformly random unvisited box and resume.
 
@@ -315,7 +315,7 @@ Structurally equivalent to Neighbor First; the conceptual framing emphasises con
 
 ### 4.15 Diagonal Sweep
 
-**File:** `strategy_diagonal_sweep.py`
+**File:** `strategies/strategy_diagonal_sweep.py`
 
 **Diagonal convention:** Anti-diagonals defined by constant `k = row + col` (0-indexed). For a 4×4 grid, k ranges from 0 (box 1 only) to 6 (box 16 only). Within each diagonal, boxes are ordered top-to-bottom.
 
@@ -325,7 +325,7 @@ Structurally equivalent to Neighbor First; the conceptual framing emphasises con
 
 ### 4.16 Weighted Center Bias
 
-**File:** `strategy_weighted_center_bias.py`
+**File:** `strategies/strategy_weighted_center_bias.py`
 
 **Rule:** All N² boxes are assigned fixed weights before any pick:
 
@@ -341,7 +341,7 @@ where `dist` is Euclidean distance to the geometric centre and `WEIGHT_POWER = 1
 
 ### 4.17 Hilbert Curve
 
-**File:** `strategy_hilbert_curve.py`
+**File:** `strategies/strategy_hilbert_curve.py`
 
 **Rule:** The Hilbert curve traversal order for the N×N grid is precomputed using the standard `d2xy` algorithm (converts Hilbert distance d to (x,y) coordinates). For non-power-of-2 N, the next-larger power-of-2 grid is used and out-of-bounds cells are filtered. The 4×4 Hilbert order is:
 
@@ -384,7 +384,7 @@ All four image strategies follow an identical flow, split between a one-time set
 
 ### 5.2 Image Salience
 
-**File:** `strategy_image_salience.py`
+**File:** `strategies/strategy_image_salience.py`
 
 **Metric:** Difference-of-Gaussians (DoG) applied to the luminance channel:
 
@@ -407,7 +407,7 @@ NOISE_A        = 0.3
 
 ### 5.3 Image Contrast
 
-**File:** `strategy_image_contrast.py`
+**File:** `strategies/strategy_image_contrast.py`
 
 **Metric:** Local RMS contrast (local standard deviation) on the luminance channel, computed via box-filter variance:
 
@@ -427,7 +427,7 @@ NOISE_A = 0.3
 
 ### 5.4 Image Colour Concentration
 
-**File:** `strategy_image_color_concentration.py`
+**File:** `strategies/strategy_image_color_concentration.py`
 
 **Metric:** Per-pixel HSV saturation derived from RGB:
 
@@ -447,7 +447,7 @@ NOISE_A = 0.3
 
 ### 5.5 Image Texture
 
-**File:** `strategy_image_texture.py`
+**File:** `strategies/strategy_image_texture.py`
 
 **Metric:** Local variance on the luminance channel, using the same box-filter formulation as the contrast strategy:
 
@@ -697,7 +697,7 @@ python compare_image_strategies_entropy.py -g 4 -l 6 -n 500 -s entropy_scatter_i
 ### Adding a Geometric Strategy
 
 ```python
-# strategy_myname.py
+# strategies/strategy_myname.py
 
 from __future__ import annotations
 from typing import List
@@ -735,7 +735,7 @@ Pass `strategy_name="myname"` to `drawSample` and `calculate_entropy` — both u
 ### Adding an Image-Guided Strategy
 
 ```python
-# strategy_image_mymetric.py
+# strategies/strategy_image_mymetric.py
 
 from __future__ import annotations
 import random
