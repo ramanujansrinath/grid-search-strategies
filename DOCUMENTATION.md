@@ -7,7 +7,7 @@
    - 2.1 [grid_utils.py](#21-grid_utilspy)
    - 2.2 [image_utils.py](#22-image_utilspy)
 3. [Universal Rules](#3-universal-rules)
-4. [Geometric Strategy Reference](#4-geometric-strategy-reference)
+4. [Spatial Strategy Reference](#4-spatial-strategy-reference)
    - 4.1 [Random](#41-random)
    - 4.2 [Row-wise](#42-row-wise)
    - 4.3 [Row-wise Sequential](#43-row-wise-sequential)
@@ -84,7 +84,7 @@ A **sequence** is an ordered list of `seq_length` boxes, selected **without repl
 
 ### 2.1 `utils/grid_utils.py`
 
-All geometric strategy modules import from `grid_utils`. The module exposes:
+All spatial strategy modules import from `grid_utils`. The module exposes:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -120,7 +120,7 @@ All image-guided strategy modules import from `image_utils`. The module exposes:
 
 ## 3. Universal Rules
 
-These rules apply **across all strategies**, geometric and image-guided:
+These rules apply **across all strategies**, spatial and image-guided:
 
 **First pick** — Every sequence begins with a uniformly random pick from all N² boxes. No strategy pre-constrains the starting position.
 
@@ -132,7 +132,7 @@ These rules apply **across all strategies**, geometric and image-guided:
 
 ---
 
-## 4. Geometric Strategy Reference
+## 4. Spatial Strategy Reference
 
 ### 4.1 Random
 
@@ -636,7 +636,7 @@ python calculate_entropy.py <strategy> [options]
 
 **File:** `compare_strategies_entropy.py`
 
-Runs all 17 geometric strategies and produces a scatter plot of H/H_max (x-axis) vs z_entropy (y-axis). Points are colour-coded by strategy category. Quadrant annotations describe the interpretation of each region.
+Runs all 17 spatial strategies and produces a scatter plot of H/H_max (x-axis) vs z_entropy (y-axis). Points are colour-coded by strategy category. Quadrant annotations describe the interpretation of each region.
 
 ```bash
 python compare_strategies_entropy.py -g 4 -l 6 -n 500 -s entropy_scatter.png
@@ -694,7 +694,7 @@ python compare_image_strategies_entropy.py -g 4 -l 6 -n 500 -s entropy_scatter_i
 
 ## 11. Extending the Library
 
-### Adding a Geometric Strategy
+### Adding a Spatial Strategy
 
 ```python
 # strategies/strategy_myname.py

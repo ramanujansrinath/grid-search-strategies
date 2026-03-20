@@ -30,7 +30,7 @@ Python 3.8+ is supported.
 from draw_sample import drawSample
 from calculate_entropy import calculate_entropy
 
-# Visualise 100 sequences from a geometric strategy
+# Visualise 100 sequences from a spatial strategy
 drawSample(grid_size=4, seq_length=6, num_seq=100,
            strategy_name="neighbor_first",
            save_path="neighbor_first.png", seed=42)
@@ -58,9 +58,9 @@ print(f"H/H_max = {result['h_normalized']:.4f}   "
 
 ## Strategies
 
-### Geometric Strategies
+### Spatial Strategies
 
-All geometric strategies share this signature:
+All spatial strategies share this signature:
 
 ```python
 generate_sequences(grid_size=4, seq_length=6, n_seq=100) -> List[List[int]]
@@ -168,7 +168,7 @@ python calculate_entropy.py knights_move -g 4 -l 6 -n 500 -q
 
 ### `compare_strategies_entropy`
 
-Runs all 17 geometric strategies and scatter-plots H/H_max (x) vs z_entropy (y), colour-coded by strategy category.
+Runs all 17 spatial strategies and scatter-plots H/H_max (x) vs z_entropy (y), colour-coded by strategy category.
 
 ```bash
 python compare_strategies_entropy.py -g 4 -l 6 -n 500 -s entropy_scatter.png
@@ -186,7 +186,7 @@ python compare_image_strategies_entropy.py -g 4 -l 6 -n 500 -s entropy_scatter_i
 
 ## Entropy Benchmarks
 
-Geometric strategies, ranked by z_entropy (4×4 grid, seq_length=6, 500 sequences):
+Spatial strategies, ranked by z_entropy (4×4 grid, seq_length=6, 500 sequences):
 
 | Strategy | H (bits) | H / H_max | z_entropy |
 |----------|----------|-----------|-----------|
@@ -256,7 +256,7 @@ grid-selection-strategies/
 │
 ├── draw_sample.py                        # visualisation utility
 ├── calculate_entropy.py                  # entropy analysis (H/H_max + z_entropy)
-├── compare_strategies_entropy.py         # scatter plot: all geometric strategies
+├── compare_strategies_entropy.py         # scatter plot: all spatial strategies
 ├── compare_image_strategies_entropy.py   # scatter plot: image strategies × images
 │
 ├── DOCUMENTATION.md
@@ -271,13 +271,13 @@ grid-selection-strategies/
 python tests/test_strategies.py
 ```
 
-Verifies that every geometric strategy returns the correct number of sequences, each of the correct length, with valid and non-duplicate box numbers, on both 4×4 and 5×5 grids.
+Verifies that every spatial strategy returns the correct number of sequences, each of the correct length, with valid and non-duplicate box numbers, on both 4×4 and 5×5 grids.
 
 ---
 
 ## Adding a New Strategy
 
-**Geometric strategy:**
+**Spatial strategy:**
 
 1. Create `strategies/strategy_myname.py`.
 2. Implement `generate_sequences(grid_size, seq_length, n_seq) -> List[List[int]]`.

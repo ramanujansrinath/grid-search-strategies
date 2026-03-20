@@ -85,7 +85,7 @@ def _call_generate_sequences(
     Call mod.generate_sequences.  Always returns (sequences, diagnostics_or_None).
 
     For image-based strategies, requests diagnostics and returns
-    (sequences, diagnostics_dict).  For geometric strategies returns
+    (sequences, diagnostics_dict).  For spatial strategies returns
     (sequences, None).  Raises ValueError if img_index is needed but None.
     """
     if _requires_image(mod):
@@ -283,7 +283,7 @@ def drawSample(
     one as a grid in a tiled figure.
 
     Figures are always auto-saved to the plots/ folder:
-      plots/<strategy_name>.png                       (geometric strategies)
+      plots/<strategy_name>.png                       (spatial strategies)
       plots/<strategy_name>_img<n>.png                (image strategies, main figure)
       plots/<strategy_name>_img<n>_diagnostics.png    (image strategies, diagnostic figure)
 
