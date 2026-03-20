@@ -94,7 +94,7 @@ def run(
     grid_size: int  = 4,
     seq_length: int = 6,
     num_seq: int    = 1000,
-    save_path: str  = "entropy_scatter.png",
+    save_path: str  = "plots/spatial_entropy_comparison.png",
 ) -> None:
 
     print(f"\nComputing entropy for {len(STRATEGIES)} strategies "
@@ -223,7 +223,7 @@ if __name__ == "__main__":
     parser.add_argument("--seq_length", "-l", type=int, default=6)
     parser.add_argument("--num_seq",    "-n", type=int, default=500)
     parser.add_argument("--save",       "-s", type=str,
-                        default="entropy_scatter.png")
+                        default="plots/spatial_entropy_comparison.png")
     args = parser.parse_args()
 
     run(grid_size=args.grid_size, seq_length=args.seq_length,
