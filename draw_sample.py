@@ -7,26 +7,27 @@ Usage
 -----
     from draw_sample import drawSample
 
-    drawSample(
-        grid_size     = 4,
-        seq_length    = 6,
-        num_seq       = 100,
-        strategy_name = "neighbor_first",   # bare name, no "strategy_" prefix needed
-        save_path     = "output.png",        # optional; if None, plt.show() is called
-        seed          = 42,                  # optional RNG seed for reproducibility
-    )
+    # Non-image strategy:
+    drawSample(grid_size=4, seq_length=6, num_seq=100,
+               strategy_name="neighbor_first",
+               save_path="output.png", seed=42)
 
-Strategy names accepted (case-insensitive, "strategy_" prefix optional)
-------------------------------------------------------------------------
-    random, rowwise, rowwise_sequential, center_out_radial,
-    center_out_spiral, neighbor_first, nearest_first, farthest_first,
-    checkerboard, knights_move, snake, perimeter_crawl, islands,
-    random_walk, diagonal_sweep, weighted_center_bias, hilbert_curve
+    # Image-based strategy (img_index required):
+    drawSample(grid_size=4, seq_length=6, num_seq=100,
+               strategy_name="image_salience",
+               img_index=1,
+               save_path="output.png", seed=42)
+
+Image-based strategies are detected automatically via inspect.signature:
+if a strategy's generate_sequences function has an img_index parameter,
+it is treated as image-based.  Calling drawSample without img_index for
+such a strategy raises a ValueError with a descriptive message.
 """
 
 from __future__ import annotations
 
 import importlib
+import inspect
 import math
 import random
 import sys
@@ -44,7 +45,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 # ── Tunable visual constants ──────────────────────────────────────────────────
-CMAP_NAME       = "plasma"      # matplotlib colormap: blue-ish → yellow
+CMAP_NAME       = "plasma"      # matplotlib colormap: purple → yellow
 UNVISITED_COLOR = "#1a1a2e"     # dark navy for unvisited cells
 VISITED_ALPHA   = 0.92          # opacity of colored cells
 LABEL_FONTSIZE  = 5.5           # font size for order labels inside cells
@@ -64,14 +65,41 @@ def _load_strategy(strategy_name: str):
     try:
         return importlib.import_module(name)
     except ModuleNotFoundError:
-        raise ValueError(
-            f"Cannot find strategy module '{name}'. "
-            f"Available strategies: random, rowwise, rowwise_sequential, "
-            f"center_out_radial, center_out_spiral, neighbor_first, "
-            f"nearest_first, farthest_first, checkerboard, knights_move, "
-            f"snake, perimeter_crawl, islands, random_walk, diagonal_sweep, "
-            f"weighted_center_bias, hilbert_curve"
+        raise ValueError(f"Cannot find strategy module '{name}'.")
+
+
+def _requires_image(mod) -> bool:
+    """Return True if the strategy's generate_sequences expects img_index."""
+    return "img_index" in inspect.signature(mod.generate_sequences).parameters
+
+
+def _call_generate_sequences(
+    mod,
+    strategy_name: str,
+    grid_size: int,
+    seq_length: int,
+    n_seq: int,
+    img_index: Optional[int],
+) -> list:
+    """
+    Call mod.generate_sequences, forwarding img_index only when the strategy
+    signature requires it.  Raises ValueError if img_index is needed but None.
+    """
+    if _requires_image(mod):
+        if img_index is None:
+            raise ValueError(
+                f"Strategy '{strategy_name}' is image-based and requires "
+                f"img_index to be provided.  Pass img_index=<n> where n is "
+                f"the 1-based index of the image in the images/ folder "
+                f"(e.g. img_index=1 loads images/img_1.png)."
+            )
+        return mod.generate_sequences(
+            grid_size=grid_size, seq_length=seq_length,
+            n_seq=n_seq, img_index=img_index,
         )
+    return mod.generate_sequences(
+        grid_size=grid_size, seq_length=seq_length, n_seq=n_seq,
+    )
 
 
 def _subplot_grid(num_seq: int):
@@ -96,52 +124,39 @@ def _draw_sequence(
     ax.set_aspect("equal")
     ax.axis("off")
 
-    # ── Draw all cells ────────────────────────────────────────────────────
-    visit_order = {}   # box → 1-based order it was visited
-    for rank, box in enumerate(seq, start=1):
-        visit_order[box] = rank
+    visit_order = {box: rank for rank, box in enumerate(seq, start=1)}
 
     for box in range(1, N * N + 1):
-        row = (box - 1) // N          # 0-indexed, top = 0
+        row = (box - 1) // N
         col = (box - 1) % N
-
-        # Matplotlib y-axis: row 0 at TOP → invert y
-        x = col
-        y = (N - 1) - row
+        x   = col
+        y   = (N - 1) - row
 
         if box in visit_order:
-            rank = visit_order[box]
+            rank      = visit_order[box]
             facecolor = cmap(norm(rank))
-            rect = patches.FancyBboxPatch(
-                (x + 0.04, y + 0.04),
-                0.92, 0.92,
+            ax.add_patch(patches.FancyBboxPatch(
+                (x + 0.04, y + 0.04), 0.92, 0.92,
                 boxstyle="round,pad=0.03",
                 linewidth=CELL_LINEWIDTH,
                 edgecolor="white",
                 facecolor=(*facecolor[:3], VISITED_ALPHA),
-            )
-            ax.add_patch(rect)
-
-            # Order label
+            ))
             ax.text(
                 x + 0.5, y + 0.5, str(rank),
                 ha="center", va="center",
-                fontsize=LABEL_FONTSIZE,
-                fontweight="bold",
+                fontsize=LABEL_FONTSIZE, fontweight="bold",
                 color="white" if facecolor[0] < 0.7 else "#111111",
             )
         else:
-            rect = patches.FancyBboxPatch(
-                (x + 0.04, y + 0.04),
-                0.92, 0.92,
+            ax.add_patch(patches.FancyBboxPatch(
+                (x + 0.04, y + 0.04), 0.92, 0.92,
                 boxstyle="round,pad=0.03",
                 linewidth=CELL_LINEWIDTH,
                 edgecolor="#444466",
                 facecolor=UNVISITED_COLOR,
-            )
-            ax.add_patch(rect)
+            ))
 
-    # Sequence index (small, top-left)
     ax.set_title(f"#{seq_idx + 1}", fontsize=TITLE_FONTSIZE,
                  pad=1.5, color="#cccccc")
 
@@ -151,6 +166,7 @@ def drawSample(
     seq_length: int = 6,
     num_seq: int = 100,
     strategy_name: str = "random",
+    img_index: Optional[int] = None,
     save_path: Optional[str] = None,
     seed: Optional[int] = None,
 ) -> None:
@@ -163,41 +179,33 @@ def drawSample(
     grid_size     : side length of the square grid (e.g. 4 for a 4×4 grid).
     seq_length    : number of boxes selected per sequence.
     num_seq       : total number of sequences (= number of subplot panels).
-    strategy_name : name of the strategy module to use (see module docstring).
-    save_path     : if given, save the figure to this path instead of
-                    calling plt.show().  E.g. "output/spiral_100.png".
-    seed          : optional integer seed for the Python RNG (reproducibility).
+    strategy_name : name of the strategy module to use.
+    img_index     : 1-based image index for image-based strategies
+                    (e.g. 1 → images/img_1.png).  Required for strategies
+                    whose generate_sequences has an img_index parameter;
+                    raises ValueError if omitted for those strategies.
+    save_path     : if given, save the figure to this path; else plt.show().
+    seed          : optional RNG seed for reproducibility.
     """
     if seed is not None:
         random.seed(seed)
 
-    # ── Load strategy and generate sequences ─────────────────────────────
-    mod = _load_strategy(strategy_name)
-    sequences = mod.generate_sequences(
-        grid_size=grid_size,
-        seq_length=seq_length,
-        n_seq=num_seq,
+    mod       = _load_strategy(strategy_name)
+    sequences = _call_generate_sequences(
+        mod, strategy_name, grid_size, seq_length, num_seq, img_index
     )
 
-    # ── Colour map and normalisation (rank 1 … seq_length) ───────────────
     cmap = plt.get_cmap(CMAP_NAME)
     norm = mcolors.Normalize(vmin=1, vmax=seq_length)
 
-    # ── Figure layout ─────────────────────────────────────────────────────
     n_rows, n_cols = _subplot_grid(num_seq)
-
-    # Each subplot cell is slightly larger for larger grids
     cell_size = 0.55 + 0.12 * grid_size
-    fig_w = n_cols * cell_size + 1.2   # +room for colorbar
-    fig_h = n_rows * cell_size + 0.7   # +room for suptitle
+    fig_w = n_cols * cell_size + 1.2
+    fig_h = n_rows * cell_size + 0.7
 
     fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(fig_w, fig_h),
-        facecolor="#0d0d1a",
+        n_rows, n_cols, figsize=(fig_w, fig_h), facecolor="#0d0d1a",
     )
-
-    # Flatten and pad with None if last row is incomplete
     axes_flat = np.array(axes).flatten()
 
     for i, ax in enumerate(axes_flat):
@@ -205,31 +213,27 @@ def drawSample(
             _draw_sequence(ax, sequences[i], grid_size, i, cmap, norm)
             ax.set_facecolor("#0d0d1a")
         else:
-            ax.axis("off")          # blank panel for incomplete last row
+            ax.axis("off")
 
-    # ── Colour bar (visit order) ──────────────────────────────────────────
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
-    cbar = fig.colorbar(
-        sm, ax=axes_flat, shrink=0.6, aspect=30,
-        pad=0.01, fraction=0.015,
-    )
+    cbar = fig.colorbar(sm, ax=axes_flat, shrink=0.6, aspect=30,
+                        pad=0.01, fraction=0.015)
     cbar.set_label("Visit order", color="white", fontsize=8)
     cbar.ax.yaxis.set_tick_params(color="white", labelsize=7)
     plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
     cbar.outline.set_edgecolor("#555577")
 
-    # ── Title ─────────────────────────────────────────────────────────────
     display_name = strategy_name.replace("strategy_", "").replace("_", " ").title()
+    img_label    = f" · img {img_index}" if img_index is not None else ""
     fig.suptitle(
-        f"Strategy: {display_name}   "
+        f"Strategy: {display_name}{img_label}   "
         f"[{grid_size}×{grid_size} grid · seq length {seq_length} · {num_seq} sequences]",
         fontsize=SUPTITLE_SIZE, color="white", y=0.995,
     )
 
     plt.tight_layout(pad=SUBPLOT_PAD)
 
-    # ── Output ────────────────────────────────────────────────────────────
     if save_path:
         out = Path(save_path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -247,13 +251,16 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Visualise selection strategies.")
-    parser.add_argument("strategy",          type=str,           help="Strategy name")
-    parser.add_argument("--grid_size",  "-g", type=int, default=4)
-    parser.add_argument("--seq_length", "-l", type=int, default=6)
-    parser.add_argument("--num_seq",    "-n", type=int, default=100)
-    parser.add_argument("--save",       "-s", type=str, default=None,
+    parser.add_argument("strategy",              type=str, help="Strategy name")
+    parser.add_argument("--grid_size",  "-g",    type=int, default=4)
+    parser.add_argument("--seq_length", "-l",    type=int, default=6)
+    parser.add_argument("--num_seq",    "-n",    type=int, default=100)
+    parser.add_argument("--img_index",  "-i",    type=int, default=None,
+                        help="Image index for image-based strategies "
+                             "(e.g. 1 → images/img_1.png)")
+    parser.add_argument("--save",       "-s",    type=str, default=None,
                         help="Output file path (e.g. out.png)")
-    parser.add_argument("--seed",             type=int, default=None)
+    parser.add_argument("--seed",                type=int, default=None)
     args = parser.parse_args()
 
     drawSample(
@@ -261,6 +268,7 @@ if __name__ == "__main__":
         seq_length=args.seq_length,
         num_seq=args.num_seq,
         strategy_name=args.strategy,
+        img_index=args.img_index,
         save_path=args.save,
         seed=args.seed,
     )
