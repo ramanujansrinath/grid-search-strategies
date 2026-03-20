@@ -33,8 +33,9 @@ import numpy as np
 from PIL import Image
 
 # ── Image directory convention ────────────────────────────────────────────────
-# Images live in  <this file's directory>/images/img_<index>.png
-_IMAGES_DIR = Path(__file__).parent / "images"
+# Images live in  <repo root>/images/img_<index>.png
+# This file lives in utils/, so we go up one level to reach the repo root.
+_IMAGES_DIR = Path(__file__).parent.parent / "images"
 
 
 def load_image(img_index: int) -> np.ndarray:
