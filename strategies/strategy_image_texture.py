@@ -74,19 +74,26 @@ def generate_sequences(
     n_seq: int = 100,
     img_index: int = 1,
     seed: Optional[int] = None,
-) -> List[List[int]]:
+    return_diagnostics: bool = False,
+):
     """
     Parameters
     ----------
-    grid_size  : side length of the square grid (N).
-    seq_length : number of boxes selected per sequence.
-    n_seq      : number of sequences to generate.
-    img_index  : 1-based index of the image to load (images/img_<n>.png).
-    seed       : optional RNG seed for reproducibility.
+    grid_size         : side length of the square grid (N).
+    seq_length        : number of boxes selected per sequence.
+    n_seq             : number of sequences to generate.
+    img_index         : 1-based index of the image to load (images/img_<n>.png).
+    seed              : optional RNG seed for reproducibility.
+    return_diagnostics: if True, return (sequences, diagnostics) instead of
+                        sequences alone.  diagnostics is a dict with keys:
+                          "img_rgb"          — (P,P,3) uint8 resized image
+                          "metric"           — (P,P) float64 raw metric map
+                          "no_noise_weights" — (N²,) float64 noise-free weights
 
     Returns
     -------
     List of n_seq sequences, each a list of seq_length distinct box numbers.
+    If return_diagnostics is True, returns (sequences, diagnostics_dict).
     """
     if seq_length > grid_size ** 2:
         raise ValueError("seq_length cannot exceed grid_size².")
@@ -101,6 +108,9 @@ def generate_sequences(
     img_rgb   = resize_to_multiple(img_rgb, N)
     metric    = _compute_texture(img_rgb)           # (P, P) float64
     metric_sd = float(metric.std())
+
+    # ── Noise-free weights (computed once, before the sequence loop) ──────
+    no_noise_weights = grid_weights(metric, N)      # (N²,) in [0.1, 0.9]
 
     boxes = all_boxes(N)
     sequences: List[List[int]] = []
@@ -121,5 +131,13 @@ def generate_sequences(
             seq.append(chosen)
 
         sequences.append(seq)
+
+    if return_diagnostics:
+        diagnostics = {
+            "img_rgb"          : img_rgb,
+            "metric"           : metric,
+            "no_noise_weights" : no_noise_weights,
+        }
+        return sequences, diagnostics
 
     return sequences

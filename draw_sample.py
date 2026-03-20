@@ -7,16 +7,15 @@ Usage
 -----
     from draw_sample import drawSample
 
-    # Non-image strategy:
+    # Non-image strategy  →  saves to  plots/neighbor_first.png
     drawSample(grid_size=4, seq_length=6, num_seq=100,
-               strategy_name="neighbor_first",
-               save_path="output.png", seed=42)
+               strategy_name="neighbor_first", seed=42)
 
-    # Image-based strategy (img_index required):
+    # Image-based strategy  →  saves to  plots/image_salience_img1.png
+    #                          and        plots/image_salience_img1_diagnostics.png
     drawSample(grid_size=4, seq_length=6, num_seq=100,
                strategy_name="image_salience",
-               img_index=1,
-               save_path="output.png", seed=42)
+               img_index=1, seed=42)
 
 Image-based strategies are detected automatically via inspect.signature:
 if a strategy's generate_sequences function has an img_index parameter,
@@ -81,10 +80,13 @@ def _call_generate_sequences(
     seq_length: int,
     n_seq: int,
     img_index: Optional[int],
-) -> list:
+) -> tuple:
     """
-    Call mod.generate_sequences, forwarding img_index only when the strategy
-    signature requires it.  Raises ValueError if img_index is needed but None.
+    Call mod.generate_sequences.  Always returns (sequences, diagnostics_or_None).
+
+    For image-based strategies, requests diagnostics and returns
+    (sequences, diagnostics_dict).  For geometric strategies returns
+    (sequences, None).  Raises ValueError if img_index is needed but None.
     """
     if _requires_image(mod):
         if img_index is None:
@@ -94,13 +96,16 @@ def _call_generate_sequences(
                 f"the 1-based index of the image in the images/ folder "
                 f"(e.g. img_index=1 loads images/img_1.png)."
             )
-        return mod.generate_sequences(
+        sequences, diagnostics = mod.generate_sequences(
             grid_size=grid_size, seq_length=seq_length,
             n_seq=n_seq, img_index=img_index,
+            return_diagnostics=True,
         )
-    return mod.generate_sequences(
+        return sequences, diagnostics
+    sequences = mod.generate_sequences(
         grid_size=grid_size, seq_length=seq_length, n_seq=n_seq,
     )
+    return sequences, None
 
 
 def _subplot_grid(num_seq: int):
@@ -162,18 +167,125 @@ def _draw_sequence(
                  pad=1.5, color="#cccccc")
 
 
+def _draw_diagnostics(
+    diag: dict,
+    grid_size: int,
+    strategy_name: str,
+    img_index: int,
+    save_path: str,
+) -> None:
+    """
+    Draw a 3-panel diagnostic figure for an image-based strategy:
+      Panel 1 — resized input image (RGB)
+      Panel 2 — full P×P pixel-level metric map, with N×N grid lines overlaid
+      Panel 3 — N×N noise-free weight grid with per-cell value labels
+
+    Always saved to save_path (caller is responsible for the full path).
+    """
+    N            = grid_size
+    img_rgb      = diag["img_rgb"]
+    metric       = diag["metric"]
+    weights_flat = diag["no_noise_weights"]
+    weights_grid = weights_flat.reshape(N, N)
+
+    BG = "#0d0d1a"
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), facecolor=BG)
+    for ax in axes:
+        ax.set_facecolor(BG)
+
+    display_name = strategy_name.replace("strategy_", "").replace("_", " ").title()
+
+    # ── Panel 1: Input image ──────────────────────────────────────────────
+    axes[0].imshow(img_rgb)
+    axes[0].set_title(f"Input image  (img_{img_index})",
+                      color="white", fontsize=9, pad=6)
+    axes[0].axis("off")
+
+    # ── Panel 2: P×P metric map with N×N grid overlay ────────────────────
+    ax = axes[1]
+    P        = metric.shape[0]
+    has_neg  = metric.min() < 0
+    cmap_met = "RdBu_r" if has_neg else "inferno"
+    vabs     = float(np.abs(metric).max())
+    vmin_met = -vabs if has_neg else float(metric.min())
+
+    im1 = ax.imshow(metric, cmap=cmap_met, vmin=vmin_met, vmax=vabs,
+                    interpolation="nearest")
+    # Overlay N×N grid lines
+    cell_px = P / N
+    for i in range(1, N):
+        ax.axhline(i * cell_px - 0.5, color="white", linewidth=0.7, alpha=0.55)
+        ax.axvline(i * cell_px - 0.5, color="white", linewidth=0.7, alpha=0.55)
+    cb1 = fig.colorbar(im1, ax=ax, fraction=0.046, pad=0.04)
+    cb1.ax.yaxis.set_tick_params(color="white", labelsize=7)
+    plt.setp(cb1.ax.yaxis.get_ticklabels(), color="white")
+    cb1.outline.set_edgecolor("#555577")
+    ax.set_title(f"Pixel metric  ({P}×{P})", color="white", fontsize=9, pad=6)
+    ax.axis("off")
+
+    # ── Panel 3: N×N noise-free weight grid ──────────────────────────────
+    ax = axes[2]
+    im2 = ax.imshow(weights_grid, cmap="viridis", vmin=0.1, vmax=0.9,
+                    interpolation="nearest",
+                    extent=[-0.5, N - 0.5, N - 0.5, -0.5])
+    # Grid lines
+    for i in range(N + 1):
+        ax.axhline(i - 0.5, color="white", linewidth=0.5, alpha=0.4)
+        ax.axvline(i - 0.5, color="white", linewidth=0.5, alpha=0.4)
+    # Per-cell labels: box number (small) + weight value (large)
+    for row in range(N):
+        for col in range(N):
+            w   = weights_grid[row, col]
+            box = row * N + col + 1
+            txt_color = "white" if w < 0.6 else "#111111"
+            ax.text(col, row - 0.12, str(box),
+                    ha="center", va="center", fontsize=6,
+                    color=txt_color, alpha=0.75)
+            ax.text(col, row + 0.22, f"{w:.2f}",
+                    ha="center", va="center", fontsize=8,
+                    color=txt_color, fontweight="bold")
+    cb2 = fig.colorbar(im2, ax=ax, fraction=0.046, pad=0.04)
+    cb2.ax.yaxis.set_tick_params(color="white", labelsize=7)
+    plt.setp(cb2.ax.yaxis.get_ticklabels(), color="white")
+    cb2.outline.set_edgecolor("#555577")
+    ax.set_title(f"Noise-free weights  ({N}×{N})",
+                 color="white", fontsize=9, pad=6)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#555577")
+
+    fig.suptitle(
+        f"Diagnostics: {display_name}  ·  img {img_index}  ·  {N}×{N} grid",
+        color="white", fontsize=11, y=1.01,
+    )
+    plt.tight_layout()
+
+    out = Path(save_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    print(f"Diagnostics saved → {out.resolve()}")
+
+    plt.close(fig)
+
+
 def drawSample(
     grid_size: int = 4,
     seq_length: int = 6,
     num_seq: int = 100,
     strategy_name: str = "random",
     img_index: Optional[int] = None,
-    save_path: Optional[str] = None,
     seed: Optional[int] = None,
 ) -> None:
     """
     Generate *num_seq* sequences using the named strategy, then plot each
     one as a grid in a tiled figure.
+
+    Figures are always auto-saved to the plots/ folder:
+      plots/<strategy_name>.png                       (geometric strategies)
+      plots/<strategy_name>_img<n>.png                (image strategies, main figure)
+      plots/<strategy_name>_img<n>_diagnostics.png    (image strategies, diagnostic figure)
 
     Parameters
     ----------
@@ -185,14 +297,13 @@ def drawSample(
                     (e.g. 1 → images/img_1.png).  Required for strategies
                     whose generate_sequences has an img_index parameter;
                     raises ValueError if omitted for those strategies.
-    save_path     : if given, save the figure to this path; else plt.show().
     seed          : optional RNG seed for reproducibility.
     """
     if seed is not None:
         random.seed(seed)
 
-    mod       = _load_strategy(strategy_name)
-    sequences = _call_generate_sequences(
+    mod                    = _load_strategy(strategy_name)
+    sequences, diagnostics = _call_generate_sequences(
         mod, strategy_name, grid_size, seq_length, num_seq, img_index
     )
 
@@ -225,7 +336,14 @@ def drawSample(
     plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
     cbar.outline.set_edgecolor("#555577")
 
-    display_name = strategy_name.replace("strategy_", "").replace("_", " ").title()
+    # ── Auto-save paths ───────────────────────────────────────────────────
+    stem      = strategy_name.replace("strategy_", "")
+    img_suffix = f"_img{img_index}" if img_index is not None else ""
+    plots_dir = _HERE / "plots"
+    main_path = plots_dir / f"{stem}{img_suffix}.png"
+    diag_path = plots_dir / f"{stem}{img_suffix}_diagnostics.png"
+
+    display_name = stem.replace("_", " ").title()
     img_label    = f" · img {img_index}" if img_index is not None else ""
     fig.suptitle(
         f"Strategy: {display_name}{img_label}   "
@@ -235,16 +353,17 @@ def drawSample(
 
     plt.tight_layout(pad=SUBPLOT_PAD)
 
-    if save_path:
-        out = Path(save_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out, dpi=FIG_DPI, bbox_inches="tight",
-                    facecolor=fig.get_facecolor())
-        print(f"Saved → {out.resolve()}")
-    else:
-        plt.show()
+    main_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(main_path, dpi=FIG_DPI, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    print(f"Saved → {main_path.resolve()}")
 
     plt.close(fig)
+
+    # ── Diagnostic figure for image-based strategies ──────────────────────
+    if diagnostics is not None:
+        _draw_diagnostics(diagnostics, grid_size, strategy_name,
+                          img_index, str(diag_path))
 
 
 # ── CLI convenience ───────────────────────────────────────────────────────────
@@ -259,8 +378,6 @@ if __name__ == "__main__":
     parser.add_argument("--img_index",  "-i",    type=int, default=None,
                         help="Image index for image-based strategies "
                              "(e.g. 1 → images/img_1.png)")
-    parser.add_argument("--save",       "-s",    type=str, default=None,
-                        help="Output file path (e.g. out.png)")
     parser.add_argument("--seed",                type=int, default=None)
     args = parser.parse_args()
 
@@ -270,6 +387,5 @@ if __name__ == "__main__":
         num_seq=args.num_seq,
         strategy_name=args.strategy,
         img_index=args.img_index,
-        save_path=args.save,
         seed=args.seed,
     )
