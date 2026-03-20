@@ -53,3 +53,4 @@ Thumbs.db
 *.log
 *.tmp
 .cache/
+GENAI_HISTORY.md

@@ -289,8 +289,6 @@ Verifies that every geometric strategy returns the correct number of sequences, 
 
 ---
 
----
-
 ## Contact
 
 Please contact Ramanujan Srinath, University of Chicago at ramsrinath@uchicago.edu for clarifications or comments.
