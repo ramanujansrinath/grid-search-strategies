@@ -58,10 +58,11 @@ from typing import Optional
 
 import numpy as np
 
-# ── Make sure the strategies directory is importable ─────────────────────────
+# ── Make sure strategies/ and utils/ are importable ──────────────────────────
 _HERE = Path(__file__).parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
+for _d in (_HERE / "strategies", _HERE / "utils"):
+    if str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
 
 # ── Exposed tuning constant ───────────────────────────────────────────────────
 N_SHUFFLES: int = 200   # shuffle iterations for z_entropy null distribution

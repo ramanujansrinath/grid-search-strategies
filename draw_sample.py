@@ -39,10 +39,11 @@ import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 import numpy as np
 
-# ── Make sure the strategies directory is importable ─────────────────────────
+# ── Make sure strategies/ and utils/ are importable ──────────────────────────
 _HERE = Path(__file__).parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
+for _d in (_HERE / "strategies", _HERE / "utils"):
+    if str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
 
 # ── Tunable visual constants ──────────────────────────────────────────────────
 CMAP_NAME       = "plasma"      # matplotlib colormap: purple → yellow

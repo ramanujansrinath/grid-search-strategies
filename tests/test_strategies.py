@@ -15,8 +15,11 @@ import traceback
 import importlib
 from pathlib import Path
 
-# Make sure the strategies directory is on the path
-sys.path.insert(0, str(Path(__file__).parent))
+# Make sure strategies/ and utils/ are on the path
+_ROOT = Path(__file__).parent.parent
+for _d in (_ROOT / "strategies", _ROOT / "utils"):
+    if str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
 
 STRATEGIES = [
     "strategy_random",
