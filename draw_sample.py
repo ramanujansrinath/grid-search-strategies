@@ -169,16 +169,22 @@ def _draw_sequence(
 
 def _draw_diagnostics(
     diag: dict,
+    sequences: List[List[int]],
     grid_size: int,
     strategy_name: str,
     img_index: int,
     save_path: str,
 ) -> None:
     """
-    Draw a 3-panel diagnostic figure for an image-based strategy:
+    Draw a 5-panel diagnostic figure for an image-based strategy:
       Panel 1 — resized input image (RGB)
       Panel 2 — full P×P pixel-level metric map, with N×N grid lines overlaid
       Panel 3 — N×N noise-free weight grid with per-cell value labels
+      Panel 4 — N×N selection frequency heatmap (fraction of sequences that
+                 visited each cell; values in [0, 1])
+      Panel 5 — N×N mean visit order heatmap (average step number at which
+                 each cell was selected, averaged only over sequences that
+                 visited it; cells never visited shown as dark / masked)
 
     Always saved to save_path (caller is responsible for the full path).
     """
@@ -187,9 +193,30 @@ def _draw_diagnostics(
     metric       = diag["metric"]
     weights_flat = diag["no_noise_weights"]
     weights_grid = weights_flat.reshape(N, N)
+    n_seq        = len(sequences)
+
+    # ── Compute Panel 4: selection frequency ─────────────────────────────
+    freq_grid = np.zeros((N, N), dtype=float)
+    for seq in sequences:
+        for box in seq:
+            r, c = (box - 1) // N, (box - 1) % N
+            freq_grid[r, c] += 1
+    freq_grid /= n_seq                              # normalise to [0, 1]
+
+    # ── Compute Panel 5: mean visit order ────────────────────────────────
+    order_sum = np.zeros((N, N), dtype=float)
+    order_cnt = np.zeros((N, N), dtype=int)
+    for seq in sequences:
+        for step, box in enumerate(seq, start=1):
+            r, c = (box - 1) // N, (box - 1) % N
+            order_sum[r, c] += step
+            order_cnt[r, c] += 1
+    with np.errstate(invalid="ignore"):
+        mean_order = np.where(order_cnt > 0, order_sum / order_cnt, np.nan)
+    mean_order_masked = np.ma.masked_invalid(mean_order)
 
     BG = "#0d0d1a"
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4.5), facecolor=BG)
+    fig, axes = plt.subplots(1, 5, figsize=(21, 4.5), facecolor=BG)
     for ax in axes:
         ax.set_facecolor(BG)
 
@@ -211,7 +238,6 @@ def _draw_diagnostics(
 
     im1 = ax.imshow(metric, cmap=cmap_met, vmin=vmin_met, vmax=vabs,
                     interpolation="nearest")
-    # Overlay N×N grid lines
     cell_px = P / N
     for i in range(1, N):
         ax.axhline(i * cell_px - 0.5, color="white", linewidth=0.7, alpha=0.55)
@@ -223,37 +249,57 @@ def _draw_diagnostics(
     ax.set_title(f"Pixel metric  ({P}×{P})", color="white", fontsize=9, pad=6)
     ax.axis("off")
 
+    # ── Shared helper for N×N cell-labelled panels ────────────────────────
+    def _cell_grid(ax, data, cmap, vmin, vmax, title, fmt=".2f", cmap_bad=BG):
+        cmap_obj = plt.get_cmap(cmap).copy()
+        cmap_obj.set_bad(color=cmap_bad)
+        im = ax.imshow(data, cmap=cmap_obj, vmin=vmin, vmax=vmax,
+                       interpolation="nearest",
+                       extent=[-0.5, N - 0.5, N - 0.5, -0.5])
+        for i in range(N + 1):
+            ax.axhline(i - 0.5, color="white", linewidth=0.5, alpha=0.4)
+            ax.axvline(i - 0.5, color="white", linewidth=0.5, alpha=0.4)
+        for row in range(N):
+            for col in range(N):
+                val = data[row, col] if not np.ma.is_masked(
+                    data[row, col] if hasattr(data, "mask") else False) else np.nan
+                if np.isnan(val) if isinstance(val, float) else False:
+                    label = "—"
+                    txt_color = "#888888"
+                else:
+                    label = format(val, fmt)
+                    norm_val = (val - vmin) / max(vmax - vmin, 1e-9)
+                    txt_color = "white" if norm_val < 0.6 else "#111111"
+                box = row * N + col + 1
+                ax.text(col, row - 0.12, str(box),
+                        ha="center", va="center", fontsize=6,
+                        color=txt_color, alpha=0.75)
+                ax.text(col, row + 0.22, label,
+                        ha="center", va="center", fontsize=8,
+                        color=txt_color, fontweight="bold")
+        cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cb.ax.yaxis.set_tick_params(color="white", labelsize=7)
+        plt.setp(cb.ax.yaxis.get_ticklabels(), color="white")
+        cb.outline.set_edgecolor("#555577")
+        ax.set_title(title, color="white", fontsize=9, pad=6)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#555577")
+        return im
+
     # ── Panel 3: N×N noise-free weight grid ──────────────────────────────
-    ax = axes[2]
-    im2 = ax.imshow(weights_grid, cmap="viridis", vmin=0.1, vmax=0.9,
-                    interpolation="nearest",
-                    extent=[-0.5, N - 0.5, N - 0.5, -0.5])
-    # Grid lines
-    for i in range(N + 1):
-        ax.axhline(i - 0.5, color="white", linewidth=0.5, alpha=0.4)
-        ax.axvline(i - 0.5, color="white", linewidth=0.5, alpha=0.4)
-    # Per-cell labels: box number (small) + weight value (large)
-    for row in range(N):
-        for col in range(N):
-            w   = weights_grid[row, col]
-            box = row * N + col + 1
-            txt_color = "white" if w < 0.6 else "#111111"
-            ax.text(col, row - 0.12, str(box),
-                    ha="center", va="center", fontsize=6,
-                    color=txt_color, alpha=0.75)
-            ax.text(col, row + 0.22, f"{w:.2f}",
-                    ha="center", va="center", fontsize=8,
-                    color=txt_color, fontweight="bold")
-    cb2 = fig.colorbar(im2, ax=ax, fraction=0.046, pad=0.04)
-    cb2.ax.yaxis.set_tick_params(color="white", labelsize=7)
-    plt.setp(cb2.ax.yaxis.get_ticklabels(), color="white")
-    cb2.outline.set_edgecolor("#555577")
-    ax.set_title(f"Noise-free weights  ({N}×{N})",
-                 color="white", fontsize=9, pad=6)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_edgecolor("#555577")
+    _cell_grid(axes[2], weights_grid, "viridis", 0.1, 0.9,
+               f"Noise-free weights  ({N}×{N})", fmt=".2f")
+
+    # ── Panel 4: Selection frequency ──────────────────────────────────────
+    _cell_grid(axes[3], freq_grid, "YlOrRd", 0.0, 1.0,
+               f"Selection frequency  (n={n_seq})", fmt=".2f")
+
+    # ── Panel 5: Mean visit order ──────────────────────────────────────────
+    seq_length = max(len(s) for s in sequences)
+    _cell_grid(axes[4], mean_order_masked, "plasma_r", 1.0, float(seq_length),
+               f"Mean visit order  (1=early)", fmt=".1f")
 
     fig.suptitle(
         f"Diagnostics: {display_name}  ·  img {img_index}  ·  {N}×{N} grid",
@@ -291,7 +337,8 @@ def drawSample(
     ----------
     grid_size     : side length of the square grid (e.g. 4 for a 4×4 grid).
     seq_length    : number of boxes selected per sequence.
-    num_seq       : total number of sequences (= number of subplot panels).
+    num_seq       : total number of sequences to generate.  Only the first
+                    25 are drawn in the tiled figure.
     strategy_name : name of the strategy module to use.
     img_index     : 1-based image index for image-based strategies
                     (e.g. 1 → images/img_1.png).  Required for strategies
@@ -310,9 +357,14 @@ def drawSample(
     cmap = plt.get_cmap(CMAP_NAME)
     norm = mcolors.Normalize(vmin=1, vmax=seq_length)
 
-    n_rows, n_cols = _subplot_grid(num_seq)
+    # Only draw the first 25 sequences regardless of how many were generated
+    MAX_DRAW    = 25
+    draw_seqs   = sequences[:MAX_DRAW]
+    n_draw      = len(draw_seqs)
+
+    n_rows, n_cols = _subplot_grid(n_draw)
     cell_size = 0.55 + 0.12 * grid_size
-    fig_w = n_cols * cell_size + 1.2
+    fig_w = n_cols * cell_size + 0.4
     fig_h = n_rows * cell_size + 0.7
 
     fig, axes = plt.subplots(
@@ -321,20 +373,11 @@ def drawSample(
     axes_flat = np.array(axes).flatten()
 
     for i, ax in enumerate(axes_flat):
-        if i < num_seq:
-            _draw_sequence(ax, sequences[i], grid_size, i, cmap, norm)
+        if i < n_draw:
+            _draw_sequence(ax, draw_seqs[i], grid_size, i, cmap, norm)
             ax.set_facecolor("#0d0d1a")
         else:
             ax.axis("off")
-
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes_flat, shrink=0.6, aspect=30,
-                        pad=0.01, fraction=0.015)
-    cbar.set_label("Visit order", color="white", fontsize=8)
-    cbar.ax.yaxis.set_tick_params(color="white", labelsize=7)
-    plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
-    cbar.outline.set_edgecolor("#555577")
 
     # ── Auto-save paths ───────────────────────────────────────────────────
     stem      = strategy_name.replace("strategy_", "")
@@ -362,7 +405,7 @@ def drawSample(
 
     # ── Diagnostic figure for image-based strategies ──────────────────────
     if diagnostics is not None:
-        _draw_diagnostics(diagnostics, grid_size, strategy_name,
+        _draw_diagnostics(diagnostics, sequences, grid_size, strategy_name,
                           img_index, str(diag_path))
 
 
