@@ -18,9 +18,11 @@ For each sequence:
      chosen so far in this sequence).
 
   For each pick within a sequence:
-  • Step 1  (uniform random, no mask):
-      The first box is drawn uniformly at random from all N² cells, in line
-      with the universal first-pick rule shared across all strategies.
+  • Step 1  (peak-biased first pick):
+      A Gaussian blob is centred on the cell with the highest noise-free
+      weight (argmax of no_noise_weights) and multiplied element-wise by
+      the base weights.  This biases the first pick strongly toward the
+      highest-contrast region while keeping all cells reachable.
 
   • Steps 2 … seq_length  (contrast × neighbor weighted):
       a. Gaussian-smooth the selected_mask (sigma = NEIGHBOR_SIGMA).
@@ -154,8 +156,16 @@ def generate_sequences(
         for step in range(seq_length):
 
             if step == 0:
-                # ── First pick: uniform random (universal rule) ───────────
-                chosen = random.choice(available)
+                # ── First pick: Gaussian blob centred on peak-weight cell ─
+                peak_idx  = int(np.argmax(no_noise_weights))
+                peak_mask = np.zeros((N, N), dtype=float)
+                peak_mask[peak_idx // N, peak_idx % N] = 1.0
+                smoothed_peak = gaussian_filter(peak_mask, sigma=NEIGHBOR_SIGMA)
+                smoothed_peak = np.maximum(smoothed_peak, 0.0)
+                effective     = base_weights_2d * smoothed_peak + NOISE_LEVEL
+                w             = effective.flatten()
+                pool_w        = [w[b - 1] for b in available]
+                chosen        = random.choices(available, weights=pool_w, k=1)[0]
 
             else:
                 # ── Subsequent picks: contrast × neighbor boost ───────────
