@@ -42,6 +42,10 @@ IMAGE_STRATEGIES = [
     "image_contrast",
     "image_color_concentration",
     "image_texture",
+    "image_contrast_neighbors",
+    "image_salience_neighbors",
+    "image_color_concentration_neighbors",
+    "image_texture_neighbors",
 ]
 
 BASELINE_STRATEGIES = [
@@ -52,20 +56,28 @@ BASELINE_STRATEGIES = [
 REFERENCE_STRATEGY = "hilbert_curve"
 
 DISPLAY_NAMES = {
-    "image_salience"            : "Salience",
-    "image_contrast"            : "Contrast",
-    "image_color_concentration" : "Color Concentration",
-    "image_texture"             : "Texture",
-    "random"                    : "Random",
-    "hilbert_curve"             : "Hilbert Curve",
+    "image_salience"                       : "Salience",
+    "image_contrast"                       : "Contrast",
+    "image_color_concentration"            : "Color Concentration",
+    "image_texture"                        : "Texture",
+    "image_contrast_neighbors"             : "Contrast + Neighbors",
+    "image_salience_neighbors"             : "Salience + Neighbors",
+    "image_color_concentration_neighbors"  : "Color Conc. + Neighbors",
+    "image_texture_neighbors"              : "Texture + Neighbors",
+    "random"                               : "Random",
+    "hilbert_curve"                        : "Hilbert Curve",
 }
 
 # Marker shapes per image strategy (baselines get their own fixed markers)
 STRATEGY_MARKERS = {
-    "image_salience"            : "o",   # circle
-    "image_contrast"            : "s",   # square
-    "image_color_concentration" : "^",   # triangle up
-    "image_texture"             : "D",   # diamond
+    "image_salience"                       : "o",   # circle
+    "image_contrast"                       : "s",   # square
+    "image_color_concentration"            : "^",   # triangle up
+    "image_texture"                        : "D",   # diamond
+    "image_contrast_neighbors"             : "P",   # plus (filled)
+    "image_salience_neighbors"             : "X",   # x (filled)
+    "image_color_concentration_neighbors"  : "v",   # triangle down
+    "image_texture_neighbors"              : "h",   # hexagon
 }
 
 BASELINE_MARKERS = {
@@ -84,6 +96,29 @@ IMAGE_PALETTE = [
 ]
 
 
+def _linfit(x: np.ndarray, y: np.ndarray):
+    """Return (slope, intercept, r2) for the OLS line y = slope·x + intercept."""
+    slope, intercept = np.polyfit(x, y, 1)
+    y_hat  = slope * x + intercept
+    ss_res = np.sum((y - y_hat) ** 2)
+    ss_tot = np.sum((y - y.mean()) ** 2)
+    r2     = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return slope, intercept, r2
+
+
+def _fit_annotation(ax, slope, intercept, r2, label, color, x_pos, y_pos):
+    """Draw a fit-parameter text box at axes-relative (x_pos, y_pos)."""
+    txt = (f"{label}\n"
+           f"slope = {slope:.3f}\n"
+           f"intercept = {intercept:.3f}\n"
+           f"R² = {r2:.3f}")
+    ax.text(x_pos, y_pos, txt, transform=ax.transAxes,
+            fontsize=8, color=color, ha="right", va="bottom",
+            bbox=dict(boxstyle="round,pad=0.45", facecolor="#1a1a2e",
+                      edgecolor=color, alpha=0.92),
+            zorder=5)
+
+
 def _find_images(images_dir: Path) -> list[Path]:
     """Return sorted list of img_*.jpg files in images_dir."""
     imgs = sorted(images_dir.glob("img_*.jpg"),
@@ -98,11 +133,22 @@ def _find_images(images_dir: Path) -> list[Path]:
 
 
 def run(
-    grid_size: int  = 4,
-    seq_length: int = 6,
-    num_seq: int    = 500,
-    save_path: str  = "plots/image_entropy_comparison.png",
+    grid_size: int         = 4,
+    seq_length: int        = 6,
+    num_seq: int           = 500,
+    save_path: str | None  = None,
+    include_neighbors: int = 1,
 ) -> None:
+
+    if save_path is None:
+        fname     = ("image_neighbors_entropy_comparison.png"
+                     if include_neighbors else "image_entropy_comparison.png")
+        save_path = f"plots/{fname}"
+
+    active_strategies = [
+        s for s in IMAGE_STRATEGIES
+        if include_neighbors or not s.endswith("_neighbors")
+    ]
 
     images_dir = Path(__file__).parent / "images"
     image_paths = _find_images(images_dir)
@@ -149,7 +195,7 @@ def run(
     for img_path in image_paths:
         img_index = int(img_path.stem.split("_")[1])
         print(f"  Image {img_index} ({img_path.name})")
-        for strat in IMAGE_STRATEGIES:
+        for strat in active_strategies:
             print(f"    [{strat}] …", end=" ", flush=True)
             result = calculate_entropy(
                 grid_size=grid_size, seq_length=seq_length,
@@ -220,12 +266,35 @@ def run(
             zorder=6,
         )
 
+    # ── Linear fits ───────────────────────────────────────────────────────
+    base_recs = [r for r in records
+                 if r["img_index"] is not None
+                 and not r["strategy"].endswith("_neighbors")]
+    nb_recs   = [r for r in records
+                 if r["img_index"] is not None
+                 and r["strategy"].endswith("_neighbors")]
+
+    def _plot_fit(recs, color, label, ann_x, ann_y):
+        if len(recs) < 2:
+            return
+        x = np.array([r["h_norm"] for r in recs])
+        y = np.array([r["z"]      for r in recs])
+        slope, intercept, r2 = _linfit(x, y)
+        x_line = np.linspace(x.min(), x.max(), 200)
+        ax.plot(x_line, slope * x_line + intercept,
+                color=color, linewidth=1.5, linestyle="--",
+                zorder=2, alpha=0.8)
+        _fit_annotation(ax, slope, intercept, r2, label, color, ann_x, ann_y)
+
+    _plot_fit(base_recs, "#4fc3f7", "Image fit",      0.97, 0.18)
+    _plot_fit(nb_recs,   "#ffb74d", "Neighbors fit",  0.97, 0.05)
+
     # ── Legend: strategy shapes ───────────────────────────────────────────
     shape_handles = [
         mlines.Line2D([], [], marker=STRATEGY_MARKERS[s], color="w",
                       markerfacecolor="#aaaaaa", markersize=8,
                       linestyle="None", label=DISPLAY_NAMES[s])
-        for s in IMAGE_STRATEGIES
+        for s in active_strategies
     ]
     shape_handles += [
         mlines.Line2D([], [], marker=BASELINE_MARKERS[s], color="w",
@@ -242,22 +311,6 @@ def run(
     strategy_legend.get_title().set_color("white")
     ax.add_artist(strategy_legend)
 
-    # ── Legend: image colours ─────────────────────────────────────────────
-    image_handles = [
-        mlines.Line2D([], [], marker="o", color="w",
-                      markerfacecolor=IMAGE_PALETTE[i % len(IMAGE_PALETTE)],
-                      markersize=8, linestyle="None",
-                      label=f"img_{i + 1}.png")
-        for i in range(n_images)
-    ]
-    image_legend = ax.legend(
-        handles=image_handles,
-        title="Image", title_fontsize=8,
-        fontsize=8, facecolor="#1a1a2e", edgecolor="#555577",
-        labelcolor="white", loc="upper right",
-    )
-    image_legend.get_title().set_color("white")
-    ax.add_artist(image_legend)
 
     # ── Axis formatting ───────────────────────────────────────────────────
     ax.set_xlabel("H / H_max  (normalised transition entropy)",
@@ -290,7 +343,7 @@ def run(
             ha="right", **kw)
 
     # ── Title ─────────────────────────────────────────────────────────────
-    strat_str = ", ".join(DISPLAY_NAMES[s] for s in IMAGE_STRATEGIES)
+    strat_str = ", ".join(DISPLAY_NAMES[s] for s in active_strategies)
     hilbert_z_sign = "+" if hilbert_z >= 0 else ""
     fig.suptitle(
         f"Image Strategy Entropy: H/H_max  vs  z_entropy\n"
@@ -316,9 +369,13 @@ if __name__ == "__main__":
     parser.add_argument("--grid_size",  "-g", type=int, default=4)
     parser.add_argument("--seq_length", "-l", type=int, default=6)
     parser.add_argument("--num_seq",    "-n", type=int, default=500)
-    parser.add_argument("--save",       "-s", type=str,
-                        default="plots/image_entropy_comparison.png")
+    parser.add_argument("--save",              "-s", type=str, default=None,
+                        help="Output path (auto-derived from --include_neighbors "
+                             "if not set)")
+    parser.add_argument("--include_neighbors", "-nb", type=int, default=1,
+                        help="Include *_neighbors strategies (1=yes, 0=no)")
     args = parser.parse_args()
 
     run(grid_size=args.grid_size, seq_length=args.seq_length,
-        num_seq=args.num_seq,    save_path=args.save)
+        num_seq=args.num_seq,    save_path=args.save,
+        include_neighbors=args.include_neighbors)

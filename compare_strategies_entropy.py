@@ -90,6 +90,16 @@ CATEGORY_COLORS = {
 }
 
 
+def _linfit(x: np.ndarray, y: np.ndarray):
+    """Return (slope, intercept, r2) for the OLS line y = slope·x + intercept."""
+    slope, intercept = np.polyfit(x, y, 1)
+    y_hat  = slope * x + intercept
+    ss_res = np.sum((y - y_hat) ** 2)
+    ss_tot = np.sum((y - y.mean()) ** 2)
+    r2     = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return slope, intercept, r2
+
+
 def run(
     grid_size: int  = 4,
     seq_length: int = 6,
@@ -140,6 +150,22 @@ def run(
         zorder=3,
         alpha=0.93,
     )
+
+    # ── Linear fit ────────────────────────────────────────────────────────
+    slope, intercept, r2 = _linfit(h_norm_vals, z_vals)
+    x_line = np.linspace(h_norm_vals.min(), h_norm_vals.max(), 200)
+    ax.plot(x_line, slope * x_line + intercept,
+            color="#aaaaff", linewidth=1.5, linestyle="--",
+            zorder=2, alpha=0.8)
+    fit_text = (f"Linear fit\n"
+                f"slope = {slope:.3f}\n"
+                f"intercept = {intercept:.3f}\n"
+                f"R² = {r2:.3f}")
+    ax.text(0.97, 0.05, fit_text, transform=ax.transAxes,
+            fontsize=8, color="white", ha="right", va="bottom",
+            bbox=dict(boxstyle="round,pad=0.45", facecolor="#1a1a2e",
+                      edgecolor="#555577", alpha=0.92),
+            zorder=5)
 
     # Labels — offset to avoid overlap with the dot
     for i, strat in enumerate(names):
